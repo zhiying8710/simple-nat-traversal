@@ -229,8 +229,17 @@ jobs:
         shell: msys2 {0}
         env:
           MSYSTEM: ${{ matrix.msystem }}
+          MSYS2_PATH_TYPE: inherit
         run: |
           set -euo pipefail
+          if ! command -v go >/dev/null 2>&1; then
+            if [[ -z "${GOROOT:-}" ]]; then
+              echo "go is not on PATH and GOROOT is empty" >&2
+              exit 1
+            fi
+            export PATH="$(cygpath -u "${GOROOT}")/bin:${PATH}"
+          fi
+          go version
           VERSION="${RELEASE_TAG}"
           COMMIT="${GITHUB_SHA::7}"
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

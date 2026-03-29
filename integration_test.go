@@ -332,6 +332,159 @@ func TestTCPPortForwardEndToEnd(t *testing.T) {
 	assertContextExit(t, <-clientErrCh)
 }
 
+func TestTCPPortForwardRecoversAfterPeerKick(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	httpAddr := reserveTCPAddr(t)
+	udpAddr := reserveUDPAddr(t)
+	adminA := reserveTCPAddr(t)
+	adminB := reserveTCPAddr(t)
+	echoAddr := reserveTCPAddr(t)
+	bindAddr := reserveTCPAddr(t)
+
+	srv, err := server.New(config.ServerConfig{
+		HTTPListen:    httpAddr,
+		UDPListen:     udpAddr,
+		PublicUDPAddr: udpAddr,
+		Password:      "tcp-kick-password-1234",
+		AdminPassword: "tcp-kick-admin-password-1234",
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		serverErrCh <- srv.Run(ctx)
+	}()
+	waitForHTTPHealth(t, ctx, "http://"+httpAddr+"/healthz")
+
+	echoLn, err := net.Listen("tcp", echoAddr)
+	if err != nil {
+		t.Fatalf("listen tcp echo server: %v", err)
+	}
+	defer echoLn.Close()
+	go runTCPEchoServer(echoLn)
+
+	clientErrCh := make(chan error, 2)
+	go func() {
+		clientErrCh <- client.Run(ctx, config.ClientConfig{
+			ServerURL:     "http://" + httpAddr,
+			Password:      "tcp-kick-password-1234",
+			AdminPassword: "tcp-kick-admin-password-1234",
+			DeviceName:    "win-b",
+			UDPListen:     "127.0.0.1:0",
+			AdminListen:   adminB,
+			Publish: map[string]config.PublishConfig{
+				"rdp": {
+					Protocol: config.ServiceProtocolTCP,
+					Local:    echoAddr,
+				},
+			},
+		})
+	}()
+	go func() {
+		clientErrCh <- client.Run(ctx, config.ClientConfig{
+			ServerURL:     "http://" + httpAddr,
+			Password:      "tcp-kick-password-1234",
+			AdminPassword: "tcp-kick-admin-password-1234",
+			DeviceName:    "mac-a",
+			UDPListen:     "127.0.0.1:0",
+			AdminListen:   adminA,
+			Binds: map[string]config.BindConfig{
+				"win-rdp": {
+					Protocol: config.ServiceProtocolTCP,
+					Peer:     "win-b",
+					Service:  "rdp",
+					Local:    bindAddr,
+				},
+			},
+		})
+	}()
+
+	waitForPeerConnected(t, ctx, config.ClientConfig{AdminListen: adminA}, "win-b")
+
+	statusB, err := client.FetchStatus(ctx, config.ClientConfig{AdminListen: adminB})
+	if err != nil {
+		t.Fatalf("fetch initial tcp publish status: %v", err)
+	}
+	oldSelfID := statusB.DeviceID
+	if oldSelfID == "" {
+		t.Fatal("expected initial tcp publish status to include device_id")
+	}
+
+	conn, err := net.Dial("tcp", bindAddr)
+	if err != nil {
+		t.Fatalf("dial local tcp bind: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("kick-before-echo")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write initial tcp payload: %v", err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read initial tcp payload: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("unexpected initial tcp echo payload")
+	}
+
+	waitForBindActiveSessions(t, ctx, config.ClientConfig{AdminListen: adminA}, "win-rdp", 1)
+	waitForActiveServiceProxies(t, ctx, config.ClientConfig{AdminListen: adminB}, 1)
+
+	adminCfg := config.ClientConfig{
+		ServerURL:     "http://" + httpAddr,
+		Password:      "tcp-kick-password-1234",
+		AdminPassword: "tcp-kick-admin-password-1234",
+	}
+	kickResp, err := client.KickNetworkDevice(ctx, adminCfg, proto.KickDeviceRequest{
+		DeviceName: "win-b",
+	})
+	if err != nil {
+		t.Fatalf("kick network device: %v", err)
+	}
+	if !kickResp.Removed || kickResp.DeviceName != "win-b" {
+		t.Fatalf("unexpected kick response: %+v", kickResp)
+	}
+
+	newSelfID := waitForDeviceIDChange(t, ctx, config.ClientConfig{AdminListen: adminB}, oldSelfID)
+	if newSelfID == oldSelfID {
+		t.Fatalf("expected kicked peer to rejoin with a new device_id, got old=%s new=%s", oldSelfID, newSelfID)
+	}
+	waitForPeerConnectedWithID(t, ctx, config.ClientConfig{AdminListen: adminA}, "win-b", newSelfID)
+	waitForBindActiveSessions(t, ctx, config.ClientConfig{AdminListen: adminA}, "win-rdp", 0)
+	waitForActiveServiceProxies(t, ctx, config.ClientConfig{AdminListen: adminB}, 0)
+	waitForTCPConnClosed(t, conn)
+
+	recoveredConn, err := net.Dial("tcp", bindAddr)
+	if err != nil {
+		t.Fatalf("dial local tcp bind after rejoin: %v", err)
+	}
+	defer recoveredConn.Close()
+
+	payload2 := []byte("kick-after-rejoin")
+	if _, err := recoveredConn.Write(payload2); err != nil {
+		t.Fatalf("write tcp payload after rejoin: %v", err)
+	}
+	got2 := make([]byte, len(payload2))
+	if _, err := io.ReadFull(recoveredConn, got2); err != nil {
+		t.Fatalf("read tcp payload after rejoin: %v", err)
+	}
+	if !bytes.Equal(got2, payload2) {
+		t.Fatalf("unexpected tcp echo payload after rejoin")
+	}
+
+	cancel()
+	assertContextExit(t, <-serverErrCh)
+	assertContextExit(t, <-clientErrCh)
+	assertContextExit(t, <-clientErrCh)
+}
+
 func TestGracefulLeaveAllowsImmediateReconnect(t *testing.T) {
 	t.Parallel()
 
@@ -640,6 +793,61 @@ func waitForPeerConnectedWithID(t *testing.T, ctx context.Context, cfg config.Cl
 		time.Sleep(150 * time.Millisecond)
 	}
 	t.Fatalf("peer %s with device_id %s did not become connected before timeout", peerName, peerID)
+}
+
+func waitForBindActiveSessions(t *testing.T, ctx context.Context, cfg config.ClientConfig, bindName string, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, err := client.FetchStatus(ctx, cfg)
+		if err == nil {
+			for _, bind := range snapshot.Binds {
+				if bind.Name == bindName && bind.ActiveSessions == want {
+					return
+				}
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	t.Fatalf("bind %s active_sessions did not become %d before timeout", bindName, want)
+}
+
+func waitForActiveServiceProxies(t *testing.T, ctx context.Context, cfg config.ClientConfig, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, err := client.FetchStatus(ctx, cfg)
+		if err == nil && snapshot.ActiveServiceProxies == want {
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	t.Fatalf("active_service_proxies did not become %d before timeout", want)
+}
+
+func waitForTCPConnClosed(t *testing.T, conn net.Conn) {
+	t.Helper()
+
+	buf := make([]byte, 1)
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline while waiting for tcp close: %v", err)
+		}
+		_, err := conn.Read(buf)
+		if err == nil {
+			continue
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			time.Sleep(150 * time.Millisecond)
+			continue
+		}
+		return
+	}
+	t.Fatal("tcp connection did not close before timeout")
 }
 
 func deviceListContains(snapshot proto.NetworkDevicesResponse, deviceName, deviceID string) bool {
