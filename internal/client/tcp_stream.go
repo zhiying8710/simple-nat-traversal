@@ -185,13 +185,21 @@ func (s *tcpReliableSender) sendFrame(seq uint64, chunk []byte) error {
 }
 
 func processTCPInbound(nextSeq *uint64, pending map[uint64][]byte, seq uint64, payload []byte) ([][]byte, uint64) {
+	lastAck := uint64(0)
+	if *nextSeq > 0 {
+		lastAck = *nextSeq - 1
+	}
 	if seq == 0 {
-		return nil, *nextSeq - 1
+		return nil, lastAck
 	}
 	if *nextSeq == 0 {
 		*nextSeq = 1
+		lastAck = 0
 	}
 	if seq < *nextSeq {
+		return nil, *nextSeq - 1
+	}
+	if seq-*nextSeq >= uint64(tcpSendWindow) {
 		return nil, *nextSeq - 1
 	}
 	if _, ok := pending[seq]; !ok {
