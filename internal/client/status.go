@@ -1,0 +1,338 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"simple-nat-traversal/internal/config"
+)
+
+type StatusSnapshot struct {
+	GeneratedAt               time.Time       `json:"generated_at"`
+	StartedAt                 time.Time       `json:"started_at"`
+	DeviceID                  string          `json:"device_id"`
+	DeviceName                string          `json:"device_name"`
+	NetworkState              string          `json:"network_state"`
+	LocalUDPAddr              string          `json:"local_udp_addr,omitempty"`
+	ObservedAddr              string          `json:"observed_addr,omitempty"`
+	ServerUDPAddr             string          `json:"server_udp_addr,omitempty"`
+	AdminAddr                 string          `json:"admin_addr,omitempty"`
+	HeartbeatSeconds          int             `json:"heartbeat_seconds"`
+	PunchIntervalMS           int             `json:"punch_interval_ms"`
+	LastRegisterAt            time.Time       `json:"last_register_at,omitempty"`
+	LastRegisterError         string          `json:"last_register_error,omitempty"`
+	RejoinCount               uint64          `json:"rejoin_count"`
+	LastRejoinReason          string          `json:"last_rejoin_reason,omitempty"`
+	LastRejoinAttemptAt       time.Time       `json:"last_rejoin_attempt_at,omitempty"`
+	LastRejoinAt              time.Time       `json:"last_rejoin_at,omitempty"`
+	LastRejoinError           string          `json:"last_rejoin_error,omitempty"`
+	ConsecutiveRejoinFailures uint64          `json:"consecutive_rejoin_failures"`
+	ActiveServiceProxies      int             `json:"active_service_proxies"`
+	Publish                   []PublishStatus `json:"publish"`
+	Binds                     []BindStatus    `json:"binds"`
+	Peers                     []PeerStatus    `json:"peers"`
+	RecentEvents              []TraceEvent    `json:"recent_events,omitempty"`
+}
+
+type PublishStatus struct {
+	Name  string `json:"name"`
+	Local string `json:"local"`
+}
+
+type BindStatus struct {
+	Name           string `json:"name"`
+	ListenAddr     string `json:"listen_addr"`
+	Peer           string `json:"peer"`
+	Service        string `json:"service"`
+	ActiveSessions int    `json:"active_sessions"`
+}
+
+type PeerStatus struct {
+	DeviceID             string            `json:"device_id"`
+	DeviceName           string            `json:"device_name"`
+	State                string            `json:"state"`
+	ObservedAddr         string            `json:"observed_addr,omitempty"`
+	ChosenAddr           string            `json:"chosen_addr,omitempty"`
+	Candidates           []string          `json:"candidates,omitempty"`
+	Services             []string          `json:"services,omitempty"`
+	LastSeen             time.Time         `json:"last_seen,omitempty"`
+	SessionEstablishedAt time.Time         `json:"session_established_at,omitempty"`
+	SessionLastSeen      time.Time         `json:"session_last_seen,omitempty"`
+	PunchAttempts        uint64            `json:"punch_attempts"`
+	SentPackets          uint64            `json:"sent_packets"`
+	RecvPackets          uint64            `json:"recv_packets"`
+	SentBytes            uint64            `json:"sent_bytes"`
+	RecvBytes            uint64            `json:"recv_bytes"`
+	LastError            string            `json:"last_error,omitempty"`
+	RouteReason          string            `json:"route_reason,omitempty"`
+	RouteChangedAt       time.Time         `json:"route_changed_at,omitempty"`
+	LastOfflineReason    string            `json:"last_offline_reason,omitempty"`
+	CandidateStats       []CandidateStatus `json:"candidate_stats,omitempty"`
+}
+
+type CandidateStatus struct {
+	Addr                  string    `json:"addr"`
+	CurrentRoute          bool      `json:"current_route"`
+	Attempts              uint64    `json:"attempts"`
+	FirstAttemptAt        time.Time `json:"first_attempt_at,omitempty"`
+	LastAttemptAt         time.Time `json:"last_attempt_at,omitempty"`
+	LastInboundAt         time.Time `json:"last_inbound_at,omitempty"`
+	LastSuccessAt         time.Time `json:"last_success_at,omitempty"`
+	FirstSuccessLatencyMS int64     `json:"first_success_latency_ms,omitempty"`
+	LastSuccessSource     string    `json:"last_success_source,omitempty"`
+}
+
+type TraceEvent struct {
+	At       time.Time `json:"at"`
+	Scope    string    `json:"scope"`
+	PeerID   string    `json:"peer_id,omitempty"`
+	PeerName string    `json:"peer_name,omitempty"`
+	Event    string    `json:"event"`
+	Detail   string    `json:"detail,omitempty"`
+}
+
+func FetchStatus(ctx context.Context, cfg config.ClientConfig) (StatusSnapshot, error) {
+	if cfg.AdminListen == "" {
+		return StatusSnapshot{}, errors.New("client config missing admin_listen")
+	}
+
+	u, err := statusURLFromListen(cfg.AdminListen)
+	if err != nil {
+		return StatusSnapshot{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return StatusSnapshot{}, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return StatusSnapshot{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return StatusSnapshot{}, fmt.Errorf("status endpoint returned %s", resp.Status)
+	}
+
+	var snapshot StatusSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		return StatusSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func (c *Client) startAdminServer() error {
+	if c.cfg.AdminListen == "" {
+		return nil
+	}
+	if err := config.ValidateAdminListen(c.cfg.AdminListen); err != nil {
+		return err
+	}
+
+	ln, err := net.Listen("tcp", c.cfg.AdminListen)
+	if err != nil {
+		return fmt.Errorf("listen admin http: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/status", c.handleStatus)
+
+	srv := &http.Server{
+		Handler: mux,
+	}
+	c.adminServer = srv
+	c.adminAddr = ln.Addr().String()
+
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("admin http server exited: %v", err)
+		}
+	}()
+	return nil
+}
+
+func (c *Client) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(c.snapshotStatus()); err != nil {
+		http.Error(w, "encode status failed", http.StatusInternalServerError)
+	}
+}
+
+func (c *Client) snapshotStatus() StatusSnapshot {
+	session := c.networkSnapshot()
+	snapshot := StatusSnapshot{
+		GeneratedAt:      time.Now(),
+		StartedAt:        c.startedAt,
+		DeviceID:         session.deviceID,
+		DeviceName:       c.cfg.DeviceName,
+		AdminAddr:        c.adminAddr,
+		HeartbeatSeconds: int(session.heartbeat / time.Second),
+		PunchIntervalMS:  int(session.punchInterval / time.Millisecond),
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	snapshot.ObservedAddr = c.observedAddr
+	snapshot.NetworkState = firstNonEmpty(c.networkState, "joined")
+	if c.udpConn != nil {
+		snapshot.LocalUDPAddr = c.udpConn.LocalAddr().String()
+	}
+	if session.serverUDPAddr != nil {
+		snapshot.ServerUDPAddr = session.serverUDPAddr.String()
+	}
+	snapshot.LastRegisterAt = c.lastRegisterAt
+	snapshot.LastRegisterError = c.lastRegisterError
+	snapshot.RejoinCount = c.rejoinCount
+	snapshot.LastRejoinReason = c.lastRejoinReason
+	snapshot.LastRejoinAttemptAt = c.lastRejoinAttemptAt
+	snapshot.LastRejoinAt = c.lastRejoinAt
+	snapshot.LastRejoinError = c.lastRejoinError
+	snapshot.ConsecutiveRejoinFailures = c.consecutiveRejoinFailures
+	snapshot.ActiveServiceProxies = len(c.serviceProxies)
+	snapshot.RecentEvents = slices.Clone(c.traceEvents)
+
+	for name, publish := range c.cfg.Publish {
+		snapshot.Publish = append(snapshot.Publish, PublishStatus{
+			Name:  name,
+			Local: publish.Local,
+		})
+	}
+	for name, bind := range c.binds {
+		bind.mu.Lock()
+		activeSessions := len(bind.sessions)
+		bind.mu.Unlock()
+
+		snapshot.Binds = append(snapshot.Binds, BindStatus{
+			Name:           name,
+			ListenAddr:     bind.conn.LocalAddr().String(),
+			Peer:           bind.cfg.Peer,
+			Service:        bind.cfg.Service,
+			ActiveSessions: activeSessions,
+		})
+	}
+	for _, peer := range c.peers {
+		state := peerStateLabel(peer)
+		status := PeerStatus{
+			DeviceID:          peer.info.DeviceID,
+			DeviceName:        peer.info.DeviceName,
+			State:             state,
+			ObservedAddr:      peer.info.ObservedAddr,
+			ChosenAddr:        udpAddrString(peer.chosenAddr),
+			Candidates:        udpAddrsToStrings(peer.candidates),
+			Services:          serviceNames(peer.info.Services),
+			LastSeen:          peer.lastSeen,
+			PunchAttempts:     peer.punchAttempts,
+			LastError:         peer.lastError,
+			RouteReason:       peer.routeReason,
+			RouteChangedAt:    peer.routeChangedAt,
+			LastOfflineReason: peer.lastOfflineReason,
+		}
+		status.CandidateStats = snapshotCandidateStats(peer.candidateStats, peer.chosenAddr)
+		if peer.session != nil {
+			status.SessionEstablishedAt = peer.session.establishedAt
+			status.SessionLastSeen = peer.session.lastSeen
+			status.SentPackets = peer.session.sentPackets.Load()
+			status.RecvPackets = peer.session.recvPackets.Load()
+			status.SentBytes = peer.session.sentBytes.Load()
+			status.RecvBytes = peer.session.recvBytes.Load()
+		}
+		snapshot.Peers = append(snapshot.Peers, status)
+	}
+
+	slices.SortFunc(snapshot.Publish, func(a, b PublishStatus) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	slices.SortFunc(snapshot.Binds, func(a, b BindStatus) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	slices.SortFunc(snapshot.Peers, func(a, b PeerStatus) int {
+		return strings.Compare(a.DeviceName+a.DeviceID, b.DeviceName+b.DeviceID)
+	})
+	return snapshot
+}
+
+func statusURLFromListen(addr string) (string, error) {
+	if err := config.ValidateAdminListen(addr); err != nil {
+		return "", err
+	}
+	u := url.URL{
+		Scheme: "http",
+		Host:   addr,
+		Path:   "/status",
+	}
+	return u.String(), nil
+}
+
+func peerStateLabel(peer *peerState) string {
+	switch {
+	case peer == nil:
+		return "unknown"
+	case peer.session != nil && peer.chosenAddr != nil:
+		return "connected"
+	case len(peer.candidates) > 0:
+		return "punching"
+	default:
+		return "discovered"
+	}
+}
+
+func udpAddrString(addr *net.UDPAddr) string {
+	if addr == nil {
+		return ""
+	}
+	return addr.String()
+}
+
+func snapshotCandidateStats(in map[string]*candidateState, chosen *net.UDPAddr) []CandidateStatus {
+	if len(in) == 0 {
+		return nil
+	}
+	currentRoute := udpAddrString(chosen)
+	out := make([]CandidateStatus, 0, len(in))
+	for _, candidate := range in {
+		if candidate == nil {
+			continue
+		}
+		out = append(out, CandidateStatus{
+			Addr:                  candidate.addr,
+			CurrentRoute:          candidate.addr == currentRoute,
+			Attempts:              candidate.attempts,
+			FirstAttemptAt:        candidate.firstAttemptAt,
+			LastAttemptAt:         candidate.lastAttemptAt,
+			LastInboundAt:         candidate.lastInboundAt,
+			LastSuccessAt:         candidate.lastSuccessAt,
+			FirstSuccessLatencyMS: durationMillis(candidate.firstSuccessLatency),
+			LastSuccessSource:     candidate.lastSuccessSource,
+		})
+	}
+	slices.SortFunc(out, func(a, b CandidateStatus) int {
+		return strings.Compare(a.Addr, b.Addr)
+	})
+	return out
+}
+
+func durationMillis(value time.Duration) int64 {
+	if value <= 0 {
+		return 0
+	}
+	return value.Milliseconds()
+}

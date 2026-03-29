@@ -1,0 +1,21 @@
+{
+  "server_url": "https://YOUR_VPS_PUBLIC_IP",
+  "password": "replace-with-your-own-strong-password",
+  "admin_password": "replace-with-a-separate-admin-password",
+  "device_name": "winpc",
+  "auto_connect": true,
+  "udp_listen": ":0",
+  "admin_listen": "127.0.0.1:19091",
+  "publish": {
+    "game": {
+      "local": "127.0.0.1:19132"
+    }
+  },
+  "binds": {
+    "mac-game": {
+      "peer": "macbook-air",
+      "service": "game",
+      "local": "127.0.0.1:29132"
+    }
+  }
+}

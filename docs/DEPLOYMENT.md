@@ -1,0 +1,131 @@
+# Deployment
+
+## 1. 服务端准备
+
+需要一台有公网 IP 的 Linux VPS。
+
+准备一个服务端配置，例如：
+
+```json
+{
+  "http_listen": ":8080",
+  "udp_listen": ":3479",
+  "public_udp_addr": "YOUR_VPS_PUBLIC_IP:3479",
+  "password": "replace-with-your-own-strong-password",
+  "admin_password": "replace-with-a-separate-admin-password"
+}
+```
+
+要求：
+
+- `public_udp_addr` 必须填真实公网 `IP:port`
+- `password` 需要和所有客户端一致
+- `admin_password` 应和客户端里用于管理网络的配置单独对应，不要复用 `password`
+- 服务端默认会在配置文件旁边生成一个 `*.state.json` 状态文件，用来持久化设备名和身份公钥的绑定关系；如果需要也可以显式配置 `state_path`
+- 建议 HTTP 层通过反向代理挂上 HTTPS
+
+## 2. 构建
+
+可以直接本机构建：
+
+```bash
+go build ./...
+```
+
+如果要出正式包，建议用 [scripts/build-release.sh](/Users/zhiying8710/wk/simple-nat-traversal/scripts/build-release.sh) 或 [scripts/build-release.ps1](/Users/zhiying8710/wk/simple-nat-traversal/scripts/build-release.ps1)。
+
+说明：
+
+- `snt` / `snt-server` 仍然适合交叉编译。
+- `snt-gui` 现在基于 Fyne，建议在目标桌面系统上原生构建；发布脚本会跳过不匹配宿主平台的 GUI 目标。
+
+## 3. 启动服务端
+
+```bash
+./snt-server -config ./server.json
+```
+
+建议：
+
+- 用 systemd 或 supervisor 常驻
+- 打开 HTTP 端口和 UDP 端口
+- 确认云厂商安全组同时放行 TCP/UDP
+
+## 4. 客户端准备
+
+先准备 `client.json`：
+
+```json
+{
+  "server_url": "https://YOUR_DOMAIN_OR_IP",
+  "password": "replace-with-your-own-strong-password",
+  "admin_password": "replace-with-a-separate-admin-password",
+  "device_name": "macbook-air",
+  "auto_connect": true,
+  "udp_listen": ":0",
+  "admin_listen": "127.0.0.1:19090",
+  "publish": {},
+  "binds": {}
+}
+```
+
+说明：
+
+- `admin_password` 只用于查看在线设备和踢设备；如果某台客户端不需要这些管理能力，可以留空
+- 客户端会在首次保存配置或首次运行时自动生成稳定设备身份并写回配置
+- 如果联调阶段需要临时直连公网 `http://...`，再显式加上 `"allow_insecure_http": true`；正式环境仍建议走反代后的 `https://...`
+
+## 5. 启动 GUI
+
+macOS / Windows 推荐直接启动 GUI：
+
+```bash
+./snt-gui -config ./client.json
+```
+
+启动后会直接打开原生窗口，不再依赖浏览器。
+如果 `auto_connect=true`，GUI 打开后会自动尝试拉起客户端。
+
+## 6. 设置登录后自动启动
+
+注意：需要使用正式构建好的二进制，不能用 `go run`。
+
+GUI 自启：
+
+```bash
+./snt-gui -config ./client.json
+```
+
+然后在 GUI 里点击“安装开机启动”。
+
+或者命令行：
+
+```bash
+./snt -config ./client.json -install-autostart
+```
+
+如果 `auto_connect=true`，GUI 登录后会自动建联。
+
+## 7. Windows 注意事项
+
+- 首次运行可能会弹系统防火墙提示
+- 需要允许客户端二进制访问网络
+- 如果本地 UDP 服务绑定到特定端口，也要确认本机没有其他程序占用
+
+## 8. 故障排查
+
+优先看：
+
+- GUI 总览页
+- GUI 的 Trace 区域
+- GUI 的 Logs 区域
+
+CLI 也可以辅助查看：
+
+```bash
+./snt -config ./client.json -overview
+./snt -config ./client.json -trace
+./snt -config ./client.json -network
+```
+
+如果双方网络非常严格，纯 UDP 打洞可能仍然失败，这属于当前产品边界。

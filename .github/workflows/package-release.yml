@@ -1,0 +1,222 @@
+name: package-release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: package-release-test-build
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: test-build
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run full test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./...
+
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build and package Linux artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG}"
+          COMMIT="${GITHUB_SHA::7}"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-X simple-nat-traversal/internal/buildinfo.Version=${VERSION} -X simple-nat-traversal/internal/buildinfo.Commit=${COMMIT} -X simple-nat-traversal/internal/buildinfo.BuiltAt=${BUILT_AT}"
+          DIST="${RUNNER_TEMP}/dist"
+          SERVER_DIR="${DIST}/server-linux-amd64"
+          CLIENT_DIR="${DIST}/client-linux-amd64"
+          mkdir -p "${SERVER_DIR}" "${CLIENT_DIR}"
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o "${SERVER_DIR}/snt-server" ./cmd/snt-server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o "${CLIENT_DIR}/snt" ./cmd/snt
+
+          cp README.md "${SERVER_DIR}/README.md"
+          cp docs/DEPLOYMENT.md "${SERVER_DIR}/DEPLOYMENT.md"
+          cp examples/server.json "${SERVER_DIR}/server.json"
+
+          cp README.md "${CLIENT_DIR}/README.md"
+          cp docs/DEPLOYMENT.md "${CLIENT_DIR}/DEPLOYMENT.md"
+          cp docs/USER_GUIDE.md "${CLIENT_DIR}/USER_GUIDE.md"
+          cp examples/client-linux.json "${CLIENT_DIR}/client.json"
+
+          tar -C "${DIST}" -czf "${DIST}/server-linux-amd64.tar.gz" server-linux-amd64
+          tar -C "${DIST}" -czf "${DIST}/client-linux-amd64.tar.gz" client-linux-amd64
+
+      - name: Upload Linux archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            ${{ runner.temp }}/dist/server-linux-amd64.tar.gz
+            ${{ runner.temp }}/dist/client-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    runs-on: macos-14
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build and package macOS artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG}"
+          COMMIT="${GITHUB_SHA::7}"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-X simple-nat-traversal/internal/buildinfo.Version=${VERSION} -X simple-nat-traversal/internal/buildinfo.Commit=${COMMIT} -X simple-nat-traversal/internal/buildinfo.BuiltAt=${BUILT_AT}"
+          DIST="${RUNNER_TEMP}/dist"
+          CLIENT_DIR="${DIST}/client-macos-arm64"
+          mkdir -p "${CLIENT_DIR}"
+
+          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${CLIENT_DIR}/snt" ./cmd/snt
+          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${CLIENT_DIR}/snt-gui" ./cmd/snt-gui
+
+          cp README.md "${CLIENT_DIR}/README.md"
+          cp docs/DEPLOYMENT.md "${CLIENT_DIR}/DEPLOYMENT.md"
+          cp docs/USER_GUIDE.md "${CLIENT_DIR}/USER_GUIDE.md"
+          cp docs/GUI_CLIENT.md "${CLIENT_DIR}/GUI_CLIENT.md"
+          cp examples/client-macos.json "${CLIENT_DIR}/client.json"
+          cp scripts/run-gui.sh "${CLIENT_DIR}/run-gui.sh"
+          chmod +x "${CLIENT_DIR}/snt" "${CLIENT_DIR}/snt-gui" "${CLIENT_DIR}/run-gui.sh"
+
+          tar -C "${DIST}" -czf "${DIST}/client-macos-arm64.tar.gz" client-macos-arm64
+
+      - name: Upload macOS archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: ${{ runner.temp }}/dist/client-macos-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup MinGW for Fyne
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+
+      - name: Add MinGW to PATH
+        shell: pwsh
+        run: |
+          "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build and package Windows artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:RELEASE_TAG
+          $commit = $env:GITHUB_SHA.Substring(0, 7)
+          $builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $ldflags = "-X simple-nat-traversal/internal/buildinfo.Version=$version -X simple-nat-traversal/internal/buildinfo.Commit=$commit -X simple-nat-traversal/internal/buildinfo.BuiltAt=$builtAt"
+          $dist = Join-Path $env:RUNNER_TEMP "dist"
+          $clientDir = Join-Path $dist "client-windows-amd64"
+          New-Item -ItemType Directory -Force -Path $clientDir | Out-Null
+
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -ldflags $ldflags -o (Join-Path $clientDir "snt.exe") ./cmd/snt
+          go build -ldflags $ldflags -o (Join-Path $clientDir "snt-gui.exe") ./cmd/snt-gui
+          Remove-Item Env:GOOS
+          Remove-Item Env:GOARCH
+
+          Copy-Item README.md (Join-Path $clientDir "README.md")
+          Copy-Item docs/DEPLOYMENT.md (Join-Path $clientDir "DEPLOYMENT.md")
+          Copy-Item docs/USER_GUIDE.md (Join-Path $clientDir "USER_GUIDE.md")
+          Copy-Item docs/GUI_CLIENT.md (Join-Path $clientDir "GUI_CLIENT.md")
+          Copy-Item examples/client-windows.json (Join-Path $clientDir "client.json")
+          Copy-Item scripts/run-gui.ps1 (Join-Path $clientDir "run-gui.ps1")
+
+          Compress-Archive -Path (Join-Path $clientDir "*") -DestinationPath (Join-Path $dist "client-windows-amd64.zip") -Force
+
+      - name: Upload Windows archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: ${{ runner.temp }}/dist/client-windows-amd64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    runs-on: ubuntu-latest
+    if: github.ref_name == 'main' || github.ref_name == 'master'
+    needs:
+      - build-linux
+      - build-macos
+      - build-windows
+    steps:
+      - name: Download packaged archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Replace fixed test release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release delete "${RELEASE_TAG}" --cleanup-tag --yes || true
+          gh release create "${RELEASE_TAG}" release-assets/* \
+            --target "${GITHUB_SHA}" \
+            --title "Automated Test Build" \
+            --notes "Auto-packaged from commit ${GITHUB_SHA}."
