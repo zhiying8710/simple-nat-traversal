@@ -203,3 +203,29 @@ func TestHandleLogLevelUpdatesRuntimeLevel(t *testing.T) {
 		t.Fatalf("unexpected server config log level: %s", srv.cfg.LogLevel)
 	}
 }
+
+func TestSnapshotDevicesIncludesProtocolInServiceNames(t *testing.T) {
+	t.Parallel()
+
+	srv, err := New(config.ServerConfig{Password: "server-password-1234"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	srv.devices["dev-win"] = &deviceState{
+		ID:   "dev-win",
+		Name: "win-b",
+		Services: []proto.ServiceInfo{
+			{Name: "rdp", Protocol: config.ServiceProtocolTCP},
+			{Name: "dns"},
+		},
+	}
+
+	snapshot := srv.snapshotDevices()
+	if len(snapshot.Devices) != 1 {
+		t.Fatalf("unexpected device count: %+v", snapshot.Devices)
+	}
+	if got := snapshot.Devices[0].Services; len(got) != 2 || got[0] != "dns/udp" || got[1] != "rdp/tcp" {
+		t.Fatalf("unexpected service names: %+v", got)
+	}
+}

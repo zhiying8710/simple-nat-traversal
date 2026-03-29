@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,10 +14,11 @@ import (
 )
 
 type tcpFrameEvent struct {
-	seq     uint64
-	payload []byte
-	close   bool
-	errText string
+	seq      uint64
+	payload  []byte
+	close    bool
+	errText  string
+	finalSeq uint64
 }
 
 type tcpPendingChunk struct {
@@ -31,11 +33,12 @@ type tcpReliableSender struct {
 
 	done chan struct{}
 
-	mu      sync.Mutex
-	cond    *sync.Cond
-	nextSeq uint64
-	pending map[uint64]*tcpPendingChunk
-	closed  bool
+	mu          sync.Mutex
+	cond        *sync.Cond
+	nextSeq     uint64
+	lastSentSeq uint64
+	pending     map[uint64]*tcpPendingChunk
+	closed      bool
 }
 
 func newTCPReliableSender(base proto.ServicePayload, sendPayload func(proto.ServicePayload) error, touch func()) *tcpReliableSender {
@@ -133,6 +136,15 @@ func (s *tcpReliableSender) pendingCount() int {
 	return len(s.pending)
 }
 
+func (s *tcpReliableSender) finalSeq() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSentSeq
+}
+
 func (s *tcpReliableSender) resendPending() {
 	now := time.Now()
 
@@ -174,6 +186,9 @@ func (s *tcpReliableSender) sendFrame(seq uint64, chunk []byte) error {
 	}
 
 	s.mu.Lock()
+	if seq > s.lastSentSeq {
+		s.lastSentSeq = seq
+	}
 	if pending := s.pending[seq]; pending != nil {
 		pending.sentAt = time.Now()
 	}
@@ -245,4 +260,58 @@ func tcpReadChunks(conn net.Conn, handle func([]byte) error) error {
 			return err
 		}
 	}
+}
+
+func waitTCPSenderDrain(done <-chan struct{}, sender *tcpReliableSender, timeout time.Duration) (drained bool, closed bool) {
+	if sender == nil || sender.pendingCount() == 0 {
+		return true, false
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		if sender.pendingCount() == 0 {
+			return true, false
+		}
+		select {
+		case <-done:
+			return false, true
+		case <-ticker.C:
+		case <-timer.C:
+			return sender.pendingCount() == 0, false
+		}
+	}
+}
+
+func noteTCPRemoteClose(nextSeq *uint64, closePending *bool, closeFinalSeq *uint64, closeErrText *string, finalSeq uint64, errText string) (ready bool, closeErr string) {
+	*closePending = true
+	if finalSeq > *closeFinalSeq {
+		*closeFinalSeq = finalSeq
+	}
+	if strings.TrimSpace(errText) != "" {
+		*closeErrText = errText
+	}
+	return tcpRemoteCloseReady(*nextSeq, *closePending, *closeFinalSeq), *closeErrText
+}
+
+func tcpRemoteCloseReady(nextSeq uint64, closePending bool, closeFinalSeq uint64) bool {
+	if !closePending {
+		return false
+	}
+	if closeFinalSeq == 0 {
+		return true
+	}
+	if nextSeq == 0 {
+		return false
+	}
+	return nextSeq-1 >= closeFinalSeq
+}
+
+func tcpCloseError(errText string) error {
+	if strings.TrimSpace(errText) != "" {
+		return errors.New(errText)
+	}
+	return net.ErrClosed
 }

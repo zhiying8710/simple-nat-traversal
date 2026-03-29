@@ -730,7 +730,11 @@ func normalizeCandidates(in []string) []string {
 func serviceNames(in []proto.ServiceInfo) []string {
 	out := make([]string, 0, len(in))
 	for _, service := range in {
-		out = append(out, service.Name)
+		protocol := strings.TrimSpace(service.Protocol)
+		if protocol == "" {
+			protocol = config.ServiceProtocolUDP
+		}
+		out = append(out, service.Name+"/"+protocol)
 	}
 	slices.Sort(out)
 	return out

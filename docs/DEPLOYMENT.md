@@ -38,10 +38,11 @@ go build ./...
 
 - `snt` / `snt-server` 仍然适合交叉编译。
 - 正式发布链路现在会产出：
-  - Windows `amd64` / `arm64` `setup.exe`
+  - Windows `amd64` `setup.exe`
   - macOS universal `dmg`
   - 常用桌面架构的安装包
-- 本地 [scripts/build-release.ps1](/Users/zhiying8710/wk/simple-nat-traversal/scripts/build-release.ps1) 会按当前 Windows 主机架构生成对应安装包：x64 主机打 `amd64`，ARM 主机打 `arm64`。
+- 本地 [scripts/build-release.ps1](/Users/zhiying8710/wk/simple-nat-traversal/scripts/build-release.ps1) 当前只生成 Windows `amd64` GUI 安装包，并给 GUI 可执行文件加上 `windowsgui` 链接选项，避免启动时弹出控制台窗口。
+- 暂不发布 Windows `arm64` GUI 安装包：当前上游 Fyne 在 `windows/arm64` 目标上会强制请求 OpenGL ES，已在真实机器上触发 `WGL_ARB_create_context_es2_profile is unavailable` 启动失败。Windows ARM 设备建议先使用 `amd64` 安装包。
 
 ## 3. 启动服务端
 

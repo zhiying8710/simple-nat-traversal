@@ -262,7 +262,11 @@ func TestRenderNetworkDevicesStatus(t *testing.T) {
 				ObservedAddr: "1.2.3.4:50000",
 				LastSeen:     now,
 				Services:     []string{"echo", "game"},
-				Candidates:   []string{"1.2.3.4:50000", "192.168.1.10:50000"},
+				ServiceDetails: []proto.ServiceInfo{
+					{Name: "game", Protocol: "tcp"},
+					{Name: "echo"},
+				},
+				Candidates: []string{"1.2.3.4:50000", "192.168.1.10:50000"},
 			},
 		},
 	})
@@ -274,7 +278,7 @@ func TestRenderNetworkDevicesStatus(t *testing.T) {
 		"dev_mac",
 		"online",
 		"1.2.3.4:50000",
-		"echo,game",
+		"echo/udp,game/tcp",
 		"192.168.1.10:50000",
 	} {
 		if !strings.Contains(rendered, want) {

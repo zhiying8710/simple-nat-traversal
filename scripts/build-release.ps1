@@ -102,8 +102,8 @@ function Build-GuiIfNativeHost {
 
 function Build-WindowsGui {
   $Goarch = $HostGoarch
-  if ($Goarch -ne "amd64" -and $Goarch -ne "arm64") {
-    throw "Windows installer packaging requires amd64 or arm64 host, current host is $Goarch"
+  if ($Goarch -ne "amd64") {
+    throw "Windows GUI packaging currently only supports amd64. The upstream Fyne arm64 Windows build path requests OpenGL ES and is failing on current drivers; use the amd64 installer for now."
   }
   $guiOut = Join-Path $DistDir "snt-gui-$Version-windows-$Goarch.exe"
   $cliOut = Join-Path $DistDir "snt-$Version-windows-$Goarch.exe"
@@ -135,7 +135,8 @@ function Build-WindowsGui {
   $env:CGO_ENABLED = "1"
   $env:CC = $cc
   $env:CXX = $cxx
-  go build -ldflags $LdFlags -o $guiOut ./cmd/snt-gui
+  $GuiLdFlags = "$LdFlags -H=windowsgui"
+  go build -ldflags $GuiLdFlags -o $guiOut ./cmd/snt-gui
   Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
   Remove-Item Env:CC -ErrorAction SilentlyContinue
   Remove-Item Env:CXX -ErrorAction SilentlyContinue

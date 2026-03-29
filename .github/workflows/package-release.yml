@@ -204,12 +204,6 @@ jobs:
             packages: mingw-w64-x86_64-gcc
             cc: gcc
             cxx: g++
-          - arch: arm64
-            runner: windows-11-arm
-            msystem: CLANGARM64
-            packages: mingw-w64-clang-aarch64-gcc
-            cc: clang
-            cxx: clang++
     runs-on: ${{ matrix.runner }}
     needs:
       - test
@@ -258,6 +252,7 @@ jobs:
           COMMIT="${GITHUB_SHA::7}"
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-X simple-nat-traversal/internal/buildinfo.Version=${VERSION} -X simple-nat-traversal/internal/buildinfo.Commit=${COMMIT} -X simple-nat-traversal/internal/buildinfo.BuiltAt=${BUILT_AT}"
+          GUI_LDFLAGS="${LDFLAGS} -H=windowsgui"
           RUNNER_TEMP_UNIX="$(cygpath -u "${RUNNER_TEMP}")"
           BIN_DIR="${RUNNER_TEMP_UNIX}/bin-windows-${{ matrix.arch }}"
           mkdir -p "${BIN_DIR}"
@@ -269,7 +264,7 @@ jobs:
           export CXX=${{ matrix.cxx }}
 
           go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt.exe" ./cmd/snt
-          go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt-gui.exe" ./cmd/snt-gui
+          go build -ldflags "${GUI_LDFLAGS}" -o "${BIN_DIR}/snt-gui.exe" ./cmd/snt-gui
 
       - name: Package Windows installer
         shell: pwsh

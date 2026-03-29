@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"simple-nat-traversal/internal/proto"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -304,12 +305,24 @@ func RenderNetworkDevicesStatus(snapshot proto.NetworkDevicesResponse) string {
 			emptyDash(device.State),
 			emptyDash(device.ObservedAddr),
 			timeOrDash(device.LastSeen),
-			joinOrDash(device.Services),
+			joinOrDash(networkDeviceServices(device)),
 			joinOrDash(device.Candidates),
 		)
 	}
 	_ = tw.Flush()
 	return out.String()
+}
+
+func networkDeviceServices(device proto.NetworkDeviceStatus) []string {
+	if len(device.ServiceDetails) == 0 {
+		return device.Services
+	}
+	out := make([]string, 0, len(device.ServiceDetails))
+	for _, service := range device.ServiceDetails {
+		out = append(out, displayService(service))
+	}
+	slices.Sort(out)
+	return out
 }
 
 func emptyDash(value string) string {

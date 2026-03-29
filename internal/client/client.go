@@ -26,16 +26,17 @@ import (
 )
 
 const (
-	maxDatagramSize  = 64 * 1024
-	replayWindowSize = 4096
-	bindSessionTTL   = 2 * time.Minute
-	serviceProxyTTL  = 2 * time.Minute
-	tcpIdleTTL       = 24 * time.Hour
-	traceEventLimit  = 80
-	tcpChunkSize     = 1200
-	tcpSendWindow    = 32
-	tcpResendAfter   = 250 * time.Millisecond
-	tcpOpenTimeout   = 5 * time.Second
+	maxDatagramSize      = 64 * 1024
+	replayWindowSize     = 4096
+	bindSessionTTL       = 2 * time.Minute
+	serviceProxyTTL      = 2 * time.Minute
+	tcpIdleTTL           = 24 * time.Hour
+	traceEventLimit      = 80
+	tcpChunkSize         = 1200
+	tcpSendWindow        = 32
+	tcpResendAfter       = 250 * time.Millisecond
+	tcpOpenTimeout       = 5 * time.Second
+	tcpCloseFlushTimeout = 5 * time.Second
 )
 
 var joinRequestTimeout = 6 * time.Second
@@ -169,9 +170,12 @@ type serviceProxy struct {
 	onClose   func()
 	startedAt time.Time
 
-	mu      sync.Mutex
-	nextSeq uint64
-	pending map[uint64][]byte
+	mu                  sync.Mutex
+	nextSeq             uint64
+	pending             map[uint64][]byte
+	remoteClosePending  bool
+	remoteCloseFinalSeq uint64
+	remoteCloseErrText  string
 }
 
 func Run(ctx context.Context, cfg config.ClientConfig) error {

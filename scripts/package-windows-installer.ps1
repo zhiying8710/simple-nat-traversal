@@ -3,7 +3,7 @@ param(
   [string]$Version,
 
   [Parameter(Mandatory = $true)]
-  [ValidateSet("amd64", "arm64")]
+  [ValidateSet("amd64")]
   [string]$Arch,
 
   [Parameter(Mandatory = $true)]
@@ -35,7 +35,7 @@ try {
   Copy-Item (Join-Path $RootDir "examples/client-windows.json") (Join-Path $StageDir "client.example.json")
   Copy-Item (Join-Path $RootDir "scripts/run-gui.ps1") (Join-Path $StageDir "run-gui.ps1")
 
-  $ArchitecturesAllowed = if ($Arch -eq "arm64") { "arm64" } else { "x64os" }
+  $ArchitecturesAllowed = "x64os"
   $OutputBaseName = [System.IO.Path]::GetFileNameWithoutExtension($OutputFile)
 
   @"

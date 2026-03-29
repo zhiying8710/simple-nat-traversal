@@ -187,7 +187,9 @@ func New(cfg Config) (*App, error) {
 
 	locale := detectLocale()
 	fyneApp := app.NewWithID("simple-nat-traversal.gui")
+	fyneApp.SetIcon(appIconResource())
 	win := fyneApp.NewWindow(translations[localeEnglish]["app_title"])
+	win.SetIcon(appIconResource())
 	win.SetMaster()
 	win.Resize(fyne.NewSize(1360, 900))
 
