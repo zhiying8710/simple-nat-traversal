@@ -179,6 +179,11 @@ jobs:
           lipo -create -output "${BIN_DIR}/snt" "${TMP_DIR}/snt-arm64" "${TMP_DIR}/snt-amd64"
           lipo -create -output "${BIN_DIR}/snt-gui" "${TMP_DIR}/snt-gui-arm64" "${TMP_DIR}/snt-gui-amd64"
 
+          rm -rf "${TMP_DIR}"
+          go clean -cache -testcache
+          df -h
+          du -sh "${BIN_DIR}" "${DIST}" || true
+
           chmod +x "${BIN_DIR}/snt" "${BIN_DIR}/snt-gui" ./scripts/package-macos.sh
           ./scripts/package-macos.sh "${VERSION}" "universal" "${BIN_DIR}/snt-gui" "${BIN_DIR}/snt" "${DIST}/client-macos-universal.dmg"
 

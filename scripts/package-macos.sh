@@ -14,14 +14,22 @@ OUTPUT_DMG="$5"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAGE_DIR="$(mktemp -d)"
+TMP_DMG_ROOT="$(mktemp -d)"
 APP_NAME="Simple NAT Traversal.app"
 APP_DIR="${STAGE_DIR}/${APP_NAME}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+MOUNT_DIR="${TMP_DMG_ROOT}/mount"
+RW_DMG="${TMP_DMG_ROOT}/payload.dmg"
+VOLUME_NAME="Simple NAT Traversal ${ARCH}"
 
 cleanup() {
+  if [[ -d "${MOUNT_DIR}" ]]; then
+    hdiutil detach "${MOUNT_DIR}" >/dev/null 2>&1 || hdiutil detach "${MOUNT_DIR}" -force >/dev/null 2>&1 || true
+  fi
   rm -rf "${STAGE_DIR}"
+  rm -rf "${TMP_DMG_ROOT}"
 }
 trap cleanup EXIT
 
@@ -74,9 +82,37 @@ cp "${ROOT_DIR}/examples/client-macos.json" "${STAGE_DIR}/client.example.json"
 
 mkdir -p "$(dirname "${OUTPUT_DMG}")"
 rm -f "${OUTPUT_DMG}"
+mkdir -p "${MOUNT_DIR}"
+
+STAGE_KB="$(du -sk "${STAGE_DIR}" | awk '{print $1}')"
+STAGE_MB="$(((STAGE_KB + 1023) / 1024))"
+IMAGE_MB="$((STAGE_MB + STAGE_MB / 4 + 64))"
+if (( IMAGE_MB < 128 )); then
+  IMAGE_MB=128
+fi
+
+echo "packaging macOS DMG: stage_size=${STAGE_MB}MB image_size=${IMAGE_MB}MB output=${OUTPUT_DMG}"
+
 hdiutil create \
-  -volname "Simple NAT Traversal ${ARCH}" \
-  -srcfolder "${STAGE_DIR}" \
+  -size "${IMAGE_MB}m" \
+  -fs HFS+ \
+  -volname "${VOLUME_NAME}" \
   -ov \
+  "${RW_DMG}"
+
+hdiutil attach \
+  -mountpoint "${MOUNT_DIR}" \
+  -nobrowse \
+  -noverify \
+  "${RW_DMG}"
+
+ditto "${STAGE_DIR}" "${MOUNT_DIR}"
+
+hdiutil detach "${MOUNT_DIR}"
+
+hdiutil convert \
+  "${RW_DMG}" \
   -format UDZO \
-  "${OUTPUT_DMG}"
+  -imagekey zlib-level=9 \
+  -ov \
+  -o "${OUTPUT_DMG}"
