@@ -19,31 +19,33 @@ import (
 )
 
 type StatusSnapshot struct {
-	GeneratedAt               time.Time       `json:"generated_at"`
-	StartedAt                 time.Time       `json:"started_at"`
-	DeviceID                  string          `json:"device_id"`
-	DeviceName                string          `json:"device_name"`
-	NetworkState              string          `json:"network_state"`
-	LocalUDPAddr              string          `json:"local_udp_addr,omitempty"`
-	ObservedAddr              string          `json:"observed_addr,omitempty"`
-	ServerUDPAddr             string          `json:"server_udp_addr,omitempty"`
-	AdminAddr                 string          `json:"admin_addr,omitempty"`
-	LogLevel                  string          `json:"log_level"`
-	HeartbeatSeconds          int             `json:"heartbeat_seconds"`
-	PunchIntervalMS           int             `json:"punch_interval_ms"`
-	LastRegisterAt            time.Time       `json:"last_register_at,omitempty"`
-	LastRegisterError         string          `json:"last_register_error,omitempty"`
-	RejoinCount               uint64          `json:"rejoin_count"`
-	LastRejoinReason          string          `json:"last_rejoin_reason,omitempty"`
-	LastRejoinAttemptAt       time.Time       `json:"last_rejoin_attempt_at,omitempty"`
-	LastRejoinAt              time.Time       `json:"last_rejoin_at,omitempty"`
-	LastRejoinError           string          `json:"last_rejoin_error,omitempty"`
-	ConsecutiveRejoinFailures uint64          `json:"consecutive_rejoin_failures"`
-	ActiveServiceProxies      int             `json:"active_service_proxies"`
-	Publish                   []PublishStatus `json:"publish"`
-	Binds                     []BindStatus    `json:"binds"`
-	Peers                     []PeerStatus    `json:"peers"`
-	RecentEvents              []TraceEvent    `json:"recent_events,omitempty"`
+	GeneratedAt               time.Time             `json:"generated_at"`
+	StartedAt                 time.Time             `json:"started_at"`
+	DeviceID                  string                `json:"device_id"`
+	DeviceName                string                `json:"device_name"`
+	NetworkState              string                `json:"network_state"`
+	LocalUDPAddr              string                `json:"local_udp_addr,omitempty"`
+	ObservedAddr              string                `json:"observed_addr,omitempty"`
+	ServerUDPAddr             string                `json:"server_udp_addr,omitempty"`
+	AdminAddr                 string                `json:"admin_addr,omitempty"`
+	LogLevel                  string                `json:"log_level"`
+	HeartbeatSeconds          int                   `json:"heartbeat_seconds"`
+	PunchIntervalMS           int                   `json:"punch_interval_ms"`
+	LastRegisterAt            time.Time             `json:"last_register_at,omitempty"`
+	LastRegisterError         string                `json:"last_register_error,omitempty"`
+	RejoinCount               uint64                `json:"rejoin_count"`
+	LastRejoinReason          string                `json:"last_rejoin_reason,omitempty"`
+	LastRejoinAttemptAt       time.Time             `json:"last_rejoin_attempt_at,omitempty"`
+	LastRejoinAt              time.Time             `json:"last_rejoin_at,omitempty"`
+	LastRejoinError           string                `json:"last_rejoin_error,omitempty"`
+	ConsecutiveRejoinFailures uint64                `json:"consecutive_rejoin_failures"`
+	ActiveServiceProxies      int                   `json:"active_service_proxies"`
+	Publish                   []PublishStatus       `json:"publish"`
+	Binds                     []BindStatus          `json:"binds"`
+	TCPBindStreams            []TCPBindStreamStatus `json:"tcp_bind_streams,omitempty"`
+	TCPProxies                []TCPProxyStatus      `json:"tcp_proxies,omitempty"`
+	Peers                     []PeerStatus          `json:"peers"`
+	RecentEvents              []TraceEvent          `json:"recent_events,omitempty"`
 }
 
 type PublishStatus struct {
@@ -59,6 +61,33 @@ type BindStatus struct {
 	Peer           string `json:"peer"`
 	Service        string `json:"service"`
 	ActiveSessions int    `json:"active_sessions"`
+}
+
+type TCPBindStreamStatus struct {
+	BindName        string    `json:"bind_name"`
+	PeerID          string    `json:"peer_id,omitempty"`
+	PeerName        string    `json:"peer_name,omitempty"`
+	Service         string    `json:"service"`
+	SessionID       string    `json:"session_id"`
+	State           string    `json:"state"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	LastSeen        time.Time `json:"last_seen,omitempty"`
+	BufferedInbound int       `json:"buffered_inbound"`
+	UnackedOutbound int       `json:"unacked_outbound"`
+}
+
+type TCPProxyStatus struct {
+	PeerID          string    `json:"peer_id,omitempty"`
+	PeerName        string    `json:"peer_name,omitempty"`
+	BindName        string    `json:"bind_name"`
+	Service         string    `json:"service"`
+	SessionID       string    `json:"session_id"`
+	State           string    `json:"state"`
+	Target          string    `json:"target,omitempty"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	LastSeen        time.Time `json:"last_seen,omitempty"`
+	BufferedInbound int       `json:"buffered_inbound"`
+	UnackedOutbound int       `json:"unacked_outbound"`
 }
 
 type PeerStatus struct {
@@ -268,6 +297,21 @@ func (c *Client) snapshotStatus() StatusSnapshot {
 		bind.mu.Lock()
 		activeSessions := bind.activeSessionCountLocked()
 		listenAddr := bind.listenAddrLocked()
+		for _, stream := range bind.tcpStreams {
+			state, startedAt, lastSeen, bufferedInbound, unackedOutbound := stream.snapshotStatus()
+			snapshot.TCPBindStreams = append(snapshot.TCPBindStreams, TCPBindStreamStatus{
+				BindName:        name,
+				PeerID:          stream.peerID,
+				PeerName:        firstNonEmpty(stream.peerName, c.peerDisplayNameByIDLocked(stream.peerID)),
+				Service:         stream.service,
+				SessionID:       stream.sessionID,
+				State:           state,
+				StartedAt:       startedAt,
+				LastSeen:        lastSeen,
+				BufferedInbound: bufferedInbound,
+				UnackedOutbound: unackedOutbound,
+			})
+		}
 		bind.mu.Unlock()
 
 		snapshot.Binds = append(snapshot.Binds, BindStatus{
@@ -277,6 +321,25 @@ func (c *Client) snapshotStatus() StatusSnapshot {
 			Peer:           bind.cfg.Peer,
 			Service:        bind.cfg.Service,
 			ActiveSessions: activeSessions,
+		})
+	}
+	for _, proxy := range c.serviceProxies {
+		if proxy.protocol != config.ServiceProtocolTCP {
+			continue
+		}
+		state, startedAt, lastSeen, bufferedInbound, unackedOutbound := proxy.snapshotStatus()
+		snapshot.TCPProxies = append(snapshot.TCPProxies, TCPProxyStatus{
+			PeerID:          proxy.peerID,
+			PeerName:        firstNonEmpty(proxy.peerName, c.peerDisplayNameByIDLocked(proxy.peerID)),
+			BindName:        proxy.bindName,
+			Service:         proxy.service,
+			SessionID:       proxy.sessionID,
+			State:           state,
+			Target:          proxy.target,
+			StartedAt:       startedAt,
+			LastSeen:        lastSeen,
+			BufferedInbound: bufferedInbound,
+			UnackedOutbound: unackedOutbound,
 		})
 	}
 	for _, peer := range c.peers {
@@ -314,6 +377,12 @@ func (c *Client) snapshotStatus() StatusSnapshot {
 	})
 	slices.SortFunc(snapshot.Binds, func(a, b BindStatus) int {
 		return strings.Compare(a.Name, b.Name)
+	})
+	slices.SortFunc(snapshot.TCPBindStreams, func(a, b TCPBindStreamStatus) int {
+		return strings.Compare(a.BindName+a.SessionID, b.BindName+b.SessionID)
+	})
+	slices.SortFunc(snapshot.TCPProxies, func(a, b TCPProxyStatus) int {
+		return strings.Compare(a.PeerName+a.BindName+a.SessionID, b.PeerName+b.BindName+b.SessionID)
 	})
 	slices.SortFunc(snapshot.Peers, func(a, b PeerStatus) int {
 		return strings.Compare(a.DeviceName+a.DeviceID, b.DeviceName+b.DeviceID)

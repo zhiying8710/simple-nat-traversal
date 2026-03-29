@@ -187,6 +187,23 @@ func peerDisplayName(peer *peerState) string {
 	return firstNonEmpty(peer.info.DeviceName, peer.info.DeviceID)
 }
 
+func (c *Client) peerDisplayNameByID(peerID string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.peerDisplayNameByIDLocked(peerID)
+}
+
+func (c *Client) peerDisplayNameByIDLocked(peerID string) string {
+	if c == nil {
+		return ""
+	}
+	peer := c.peers[peerID]
+	if peer == nil {
+		return peerID
+	}
+	return peerDisplayName(peer)
+}
+
 func candidateListString(addrs []*net.UDPAddr) string {
 	if len(addrs) == 0 {
 		return "-"

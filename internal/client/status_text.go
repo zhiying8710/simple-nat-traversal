@@ -56,6 +56,8 @@ func RenderRoutesStatus(snapshot StatusSnapshot) string {
 	fmt.Fprintf(&out, "public_udp\t%s\n", emptyDash(snapshot.ObservedAddr))
 	fmt.Fprintf(&out, "server_udp\t%s\n", emptyDash(snapshot.ServerUDPAddr))
 	fmt.Fprintf(&out, "service_proxies\t%d\n", snapshot.ActiveServiceProxies)
+	fmt.Fprintf(&out, "tcp_bind_streams\t%d\n", len(snapshot.TCPBindStreams))
+	fmt.Fprintf(&out, "tcp_publish_proxies\t%d\n", len(snapshot.TCPProxies))
 	out.WriteString("\n")
 
 	out.WriteString("publish\n")
@@ -63,9 +65,9 @@ func RenderRoutesStatus(snapshot StatusSnapshot) string {
 		out.WriteString("  none\n\n")
 	} else {
 		tw := tabwriter.NewWriter(&out, 0, 8, 2, ' ', 0)
-		fmt.Fprintln(tw, "NAME\tLOCAL")
+		fmt.Fprintln(tw, "NAME\tPROTOCOL\tLOCAL")
 		for _, publish := range snapshot.Publish {
-			fmt.Fprintf(tw, "%s\t%s\n", emptyDash(publish.Name), emptyDash(publish.Local))
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", emptyDash(publish.Name), emptyDash(publish.Protocol), emptyDash(publish.Local))
 		}
 		_ = tw.Flush()
 		out.WriteString("\n")
@@ -73,38 +75,90 @@ func RenderRoutesStatus(snapshot StatusSnapshot) string {
 
 	out.WriteString("bind\n")
 	if len(snapshot.Binds) == 0 {
+		out.WriteString("  none\n\n")
+	} else {
+		peersByName := make(map[string]PeerStatus, len(snapshot.Peers))
+		for _, peer := range snapshot.Peers {
+			peersByName[peer.DeviceName] = peer
+		}
+
+		tw := tabwriter.NewWriter(&out, 0, 8, 2, ' ', 0)
+		fmt.Fprintln(tw, "NAME\tPROTOCOL\tLISTEN\tPEER\tSTATE\tROUTE\tREASON\tSERVICE\tSESSIONS")
+		for _, bind := range snapshot.Binds {
+			peer, ok := peersByName[bind.Peer]
+			state := "offline"
+			route := "-"
+			reason := "-"
+			if ok {
+				state = emptyDash(peer.State)
+				route = emptyDash(peer.ChosenAddr)
+				reason = emptyDash(peer.RouteReason)
+			}
+			fmt.Fprintf(
+				tw,
+				"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+				emptyDash(bind.Name),
+				emptyDash(bind.Protocol),
+				emptyDash(bind.ListenAddr),
+				emptyDash(bind.Peer),
+				state,
+				route,
+				reason,
+				emptyDash(bind.Service),
+				bind.ActiveSessions,
+			)
+		}
+		_ = tw.Flush()
+		out.WriteString("\n\n")
+	}
+
+	out.WriteString("tcp_bind_streams\n")
+	if len(snapshot.TCPBindStreams) == 0 {
+		out.WriteString("  none\n\n")
+	} else {
+		tw := tabwriter.NewWriter(&out, 0, 8, 2, ' ', 0)
+		fmt.Fprintln(tw, "BIND\tPEER\tSERVICE\tSESSION\tSTATE\tSTARTED\tLAST_SEEN\tBUF_IN\tUNACKED_OUT")
+		for _, stream := range snapshot.TCPBindStreams {
+			fmt.Fprintf(
+				tw,
+				"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\n",
+				emptyDash(stream.BindName),
+				emptyDash(firstNonEmpty(stream.PeerName, stream.PeerID)),
+				emptyDash(stream.Service),
+				emptyDash(stream.SessionID),
+				emptyDash(stream.State),
+				timeOrDash(stream.StartedAt),
+				timeOrDash(stream.LastSeen),
+				stream.BufferedInbound,
+				stream.UnackedOutbound,
+			)
+		}
+		_ = tw.Flush()
+		out.WriteString("\n")
+	}
+
+	out.WriteString("tcp_publish_proxies\n")
+	if len(snapshot.TCPProxies) == 0 {
 		out.WriteString("  none\n")
 		return out.String()
 	}
 
-	peersByName := make(map[string]PeerStatus, len(snapshot.Peers))
-	for _, peer := range snapshot.Peers {
-		peersByName[peer.DeviceName] = peer
-	}
-
 	tw := tabwriter.NewWriter(&out, 0, 8, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tLISTEN\tPEER\tSTATE\tROUTE\tREASON\tSERVICE\tSESSIONS")
-	for _, bind := range snapshot.Binds {
-		peer, ok := peersByName[bind.Peer]
-		state := "offline"
-		route := "-"
-		reason := "-"
-		if ok {
-			state = emptyDash(peer.State)
-			route = emptyDash(peer.ChosenAddr)
-			reason = emptyDash(peer.RouteReason)
-		}
+	fmt.Fprintln(tw, "PEER\tBIND\tSERVICE\tSESSION\tSTATE\tTARGET\tSTARTED\tLAST_SEEN\tBUF_IN\tUNACKED_OUT")
+	for _, proxy := range snapshot.TCPProxies {
 		fmt.Fprintf(
 			tw,
-			"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
-			emptyDash(bind.Name),
-			emptyDash(bind.ListenAddr),
-			emptyDash(bind.Peer),
-			state,
-			route,
-			reason,
-			emptyDash(bind.Service),
-			bind.ActiveSessions,
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\n",
+			emptyDash(firstNonEmpty(proxy.PeerName, proxy.PeerID)),
+			emptyDash(proxy.BindName),
+			emptyDash(proxy.Service),
+			emptyDash(proxy.SessionID),
+			emptyDash(proxy.State),
+			emptyDash(proxy.Target),
+			timeOrDash(proxy.StartedAt),
+			timeOrDash(proxy.LastSeen),
+			proxy.BufferedInbound,
+			proxy.UnackedOutbound,
 		)
 	}
 	_ = tw.Flush()
@@ -128,6 +182,8 @@ func RenderTraceStatus(snapshot StatusSnapshot) string {
 	fmt.Fprintf(&out, "last_rejoin_at\t%s\n", timeOrDash(snapshot.LastRejoinAt))
 	fmt.Fprintf(&out, "last_rejoin_error\t%s\n", emptyDash(snapshot.LastRejoinError))
 	fmt.Fprintf(&out, "consecutive_rejoin_failures\t%d\n", snapshot.ConsecutiveRejoinFailures)
+	fmt.Fprintf(&out, "tcp_bind_streams\t%d\n", len(snapshot.TCPBindStreams))
+	fmt.Fprintf(&out, "tcp_publish_proxies\t%d\n", len(snapshot.TCPProxies))
 	fmt.Fprintf(&out, "generated_at\t%s\n", snapshot.GeneratedAt.Format(time.RFC3339))
 	out.WriteString("\n")
 
@@ -158,6 +214,47 @@ func RenderTraceStatus(snapshot StatusSnapshot) string {
 					emptyDash(candidate.LastSuccessSource),
 				)
 			}
+		}
+		_ = tw.Flush()
+		out.WriteString("\n")
+	}
+
+	out.WriteString("tcp_runtime\n")
+	if len(snapshot.TCPBindStreams) == 0 && len(snapshot.TCPProxies) == 0 {
+		out.WriteString("  none\n\n")
+	} else {
+		tw := tabwriter.NewWriter(&out, 0, 8, 2, ' ', 0)
+		fmt.Fprintln(tw, "ROLE\tPEER\tBIND\tSERVICE\tSESSION\tSTATE\tTARGET\tSTARTED\tLAST_SEEN\tBUF_IN\tUNACKED_OUT")
+		for _, stream := range snapshot.TCPBindStreams {
+			fmt.Fprintf(
+				tw,
+				"bind\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%d\t%d\n",
+				emptyDash(firstNonEmpty(stream.PeerName, stream.PeerID)),
+				emptyDash(stream.BindName),
+				emptyDash(stream.Service),
+				emptyDash(stream.SessionID),
+				emptyDash(stream.State),
+				timeOrDash(stream.StartedAt),
+				timeOrDash(stream.LastSeen),
+				stream.BufferedInbound,
+				stream.UnackedOutbound,
+			)
+		}
+		for _, proxy := range snapshot.TCPProxies {
+			fmt.Fprintf(
+				tw,
+				"publish\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\n",
+				emptyDash(firstNonEmpty(proxy.PeerName, proxy.PeerID)),
+				emptyDash(proxy.BindName),
+				emptyDash(proxy.Service),
+				emptyDash(proxy.SessionID),
+				emptyDash(proxy.State),
+				emptyDash(proxy.Target),
+				timeOrDash(proxy.StartedAt),
+				timeOrDash(proxy.LastSeen),
+				proxy.BufferedInbound,
+				proxy.UnackedOutbound,
+			)
 		}
 		_ = tw.Flush()
 		out.WriteString("\n")

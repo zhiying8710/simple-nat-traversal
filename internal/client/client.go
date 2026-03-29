@@ -153,10 +153,12 @@ type bindSession struct {
 type serviceProxy struct {
 	key       string
 	peerID    string
+	peerName  string
 	bindName  string
 	service   string
 	sessionID string
 	protocol  string
+	target    string
 	udpConn   *net.UDPConn
 	tcpConn   net.Conn
 	sender    *tcpReliableSender
@@ -165,6 +167,7 @@ type serviceProxy struct {
 	lastSeen  atomic.Int64
 	closeOnce sync.Once
 	onClose   func()
+	startedAt time.Time
 
 	mu      sync.Mutex
 	nextSeq uint64
@@ -745,6 +748,9 @@ func (c *Client) handlePeerSync(msg *proto.PeerSyncMessage) {
 		c.peers[deviceID].lastOfflineReason = "removed_from_server_peer_list"
 		c.recordEventLocked("peer", deviceID, c.peers[deviceID].info.DeviceName, "peer_offline", "removed_from_server_peer_list")
 		proxies, streams := c.dropPeerLocked(deviceID)
+		if len(proxies) > 0 || len(streams) > 0 {
+			c.recordEventLocked("tcp", deviceID, c.peers[deviceID].info.DeviceName, "tcp_peer_cleanup", fmt.Sprintf("reason=peer_offline streams=%d proxies=%d", len(streams), len(proxies)))
+		}
 		proxiesToClose = append(proxiesToClose, proxies...)
 		streamsToClose = append(streamsToClose, streams...)
 		delete(c.peers, deviceID)

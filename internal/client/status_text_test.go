@@ -64,15 +64,41 @@ func TestRenderRoutesStatus(t *testing.T) {
 		ServerUDPAddr:        "8.8.8.8:3479",
 		ActiveServiceProxies: 2,
 		Publish: []PublishStatus{
-			{Name: "echo", Local: "127.0.0.1:19132"},
+			{Name: "echo", Protocol: "udp", Local: "127.0.0.1:19132"},
 		},
 		Binds: []BindStatus{
 			{
 				Name:           "echo-b",
+				Protocol:       "tcp",
 				ListenAddr:     "127.0.0.1:29132",
 				Peer:           "win-b",
 				Service:        "echo",
 				ActiveSessions: 1,
+			},
+		},
+		TCPBindStreams: []TCPBindStreamStatus{
+			{
+				BindName:        "echo-b",
+				PeerName:        "win-b",
+				Service:         "echo",
+				SessionID:       "tcp-1",
+				State:           "open",
+				LastSeen:        time.Date(2026, 3, 28, 22, 1, 0, 0, time.UTC),
+				BufferedInbound: 1,
+				UnackedOutbound: 2,
+			},
+		},
+		TCPProxies: []TCPProxyStatus{
+			{
+				PeerName:        "win-b",
+				BindName:        "echo-b",
+				Service:         "echo",
+				SessionID:       "tcp-1",
+				State:           "open",
+				Target:          "127.0.0.1:3389",
+				LastSeen:        time.Date(2026, 3, 28, 22, 1, 1, 0, time.UTC),
+				BufferedInbound: 3,
+				UnackedOutbound: 4,
 			},
 		},
 		Peers: []PeerStatus{
@@ -88,14 +114,20 @@ func TestRenderRoutesStatus(t *testing.T) {
 	for _, want := range []string{
 		"publish",
 		"echo",
+		"udp",
 		"127.0.0.1:19132",
 		"bind",
 		"echo-b",
+		"tcp",
 		"win-b",
 		"connected",
 		"9.9.9.9:45678",
 		"received_encrypted_data",
 		"service_proxies\t2",
+		"tcp_bind_streams\t1",
+		"tcp_publish_proxies\t1",
+		"tcp-1",
+		"127.0.0.1:3389",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("rendered routes output missing %q:\n%s", want, rendered)
@@ -123,6 +155,33 @@ func TestRenderTraceStatus(t *testing.T) {
 		LastRejoinAt:              now,
 		LastRejoinError:           "join network timeout",
 		ConsecutiveRejoinFailures: 3,
+		TCPBindStreams: []TCPBindStreamStatus{
+			{
+				BindName:        "win-rdp",
+				PeerName:        "win-b",
+				Service:         "rdp",
+				SessionID:       "tcp-1",
+				State:           "opening",
+				StartedAt:       now,
+				LastSeen:        now,
+				BufferedInbound: 2,
+				UnackedOutbound: 1,
+			},
+		},
+		TCPProxies: []TCPProxyStatus{
+			{
+				PeerName:        "win-b",
+				BindName:        "win-rdp",
+				Service:         "rdp",
+				SessionID:       "tcp-1",
+				State:           "open",
+				Target:          "127.0.0.1:3389",
+				StartedAt:       now,
+				LastSeen:        now,
+				BufferedInbound: 0,
+				UnackedOutbound: 0,
+			},
+		},
 		Peers: []PeerStatus{
 			{
 				DeviceName: "win-b",
@@ -144,6 +203,13 @@ func TestRenderTraceStatus(t *testing.T) {
 		RecentEvents: []TraceEvent{
 			{
 				At:       now,
+				Scope:    "tcp",
+				PeerName: "win-b",
+				Event:    "tcp_open_ok",
+				Detail:   "bind=win-rdp service=rdp session=tcp-1",
+			},
+			{
+				At:       now,
 				Scope:    "peer",
 				PeerName: "win-b",
 				Event:    "route_selected",
@@ -159,7 +225,13 @@ func TestRenderTraceStatus(t *testing.T) {
 		"last_rejoin_reason\tinvalid_device_session",
 		"last_rejoin_error\tjoin network timeout",
 		"consecutive_rejoin_failures\t3",
+		"tcp_bind_streams\t1",
+		"tcp_publish_proxies\t1",
 		"peer_candidates",
+		"tcp_runtime",
+		"opening",
+		"127.0.0.1:3389",
+		"tcp_open_ok",
 		"win-b",
 		"9.9.9.9:45678",
 		"true",

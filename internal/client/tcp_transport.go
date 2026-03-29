@@ -3,6 +3,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"slices"
 	"strings"
@@ -30,6 +31,7 @@ type tcpBindStream struct {
 	inboundCh  chan tcpFrameEvent
 	done       chan struct{}
 	lastSeen   atomic.Int64
+	startedAt  time.Time
 
 	mu        sync.Mutex
 	nextSeq   uint64
@@ -55,6 +57,7 @@ func newTCPBindStream(peerID, peerName string, bind *bindProxy, conn net.Conn, o
 		openResult: make(chan error, 1),
 		inboundCh:  make(chan tcpFrameEvent, tcpSendWindow*2),
 		done:       make(chan struct{}),
+		startedAt:  time.Now(),
 		pending:    map[uint64][]byte{},
 		onClose:    onClose,
 	}
@@ -115,6 +118,25 @@ func (s *tcpBindStream) enqueueInbound(frame tcpFrameEvent) bool {
 	}
 }
 
+func (s *tcpBindStream) snapshotStatus() (state string, startedAt, lastSeen time.Time, bufferedInbound, unackedOutbound int) {
+	if s == nil {
+		return "closed", time.Time{}, time.Time{}, 0, 0
+	}
+	s.mu.Lock()
+	state = "opening"
+	if s.openReady {
+		state = "open"
+	}
+	startedAt = s.startedAt
+	bufferedInbound = len(s.pending)
+	s.mu.Unlock()
+	lastSeen = s.lastSeenTime()
+	if s.sender != nil {
+		unackedOutbound = s.sender.pendingCount()
+	}
+	return state, startedAt, lastSeen, bufferedInbound, unackedOutbound
+}
+
 func (c *Client) runTCPBind(bind *bindProxy) {
 	for {
 		conn, err := bind.tcp.Accept()
@@ -158,12 +180,15 @@ func (c *Client) handleTCPBindConn(bind *bindProxy, conn net.Conn) {
 
 	go stream.sender.run()
 	go c.runTCPBindInbound(stream)
+	c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_open_started", fmt.Sprintf("bind=%s service=%s session=%s", stream.bindName, stream.service, stream.sessionID))
 
 	if err := c.openTCPStream(stream); err != nil {
 		logx.Warnf("bind %s open tcp stream failed: %v", bind.name, err)
+		c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_open_failed", fmt.Sprintf("bind=%s service=%s session=%s err=%v", stream.bindName, stream.service, stream.sessionID, err))
 		stream.close()
 		return
 	}
+	c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_open_ok", fmt.Sprintf("bind=%s service=%s session=%s", stream.bindName, stream.service, stream.sessionID))
 
 	go c.runTCPBindOutbound(stream)
 }
@@ -214,6 +239,11 @@ func (c *Client) runTCPBindOutbound(stream *tcpBindStream) {
 	if err != nil && !errors.Is(err, net.ErrClosed) {
 		logx.Warnf("bind %s read tcp stream failed: %v", stream.bindName, err)
 	}
+	if err == nil || errors.Is(err, io.EOF) {
+		c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_bind_local_close", fmt.Sprintf("bind=%s service=%s session=%s", stream.bindName, stream.service, stream.sessionID))
+	} else if !errors.Is(err, net.ErrClosed) {
+		c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_bind_local_error", fmt.Sprintf("bind=%s service=%s session=%s err=%v", stream.bindName, stream.service, stream.sessionID, err))
+	}
 	_ = c.sendServicePayload(stream.peerID, proto.ServicePayload{
 		Kind:      proto.DataKindTCPClose,
 		Protocol:  config.ServiceProtocolTCP,
@@ -237,6 +267,7 @@ func (c *Client) runTCPBindInbound(stream *tcpBindStream) {
 			if strings.TrimSpace(frame.errText) != "" {
 				logx.Infof("bind %s remote tcp close: %s", stream.bindName, frame.errText)
 			}
+			c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_bind_remote_close", fmt.Sprintf("bind=%s service=%s session=%s err=%s", stream.bindName, stream.service, stream.sessionID, firstNonEmpty(frame.errText, "-")))
 			stream.close()
 			return
 		}
@@ -248,6 +279,7 @@ func (c *Client) runTCPBindInbound(stream *tcpBindStream) {
 		for _, chunk := range ready {
 			if err := writeAll(stream.conn, chunk); err != nil {
 				logx.Warnf("bind %s write to local tcp client failed: %v", stream.bindName, err)
+				c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_bind_local_write_failed", fmt.Sprintf("bind=%s service=%s session=%s err=%v", stream.bindName, stream.service, stream.sessionID, err))
 				_ = c.sendServicePayload(stream.peerID, proto.ServicePayload{
 					Kind:      proto.DataKindTCPClose,
 					Protocol:  config.ServiceProtocolTCP,
@@ -292,13 +324,16 @@ func (c *Client) getOrCreateTCPServiceProxy(peerID, bindName, service, sessionID
 	proxy := &serviceProxy{
 		key:       key,
 		peerID:    peerID,
+		peerName:  c.peerDisplayNameByID(peerID),
 		bindName:  bindName,
 		service:   service,
 		sessionID: sessionID,
 		protocol:  config.ServiceProtocolTCP,
+		target:    target,
 		tcpConn:   conn,
 		inboundCh: make(chan tcpFrameEvent, tcpSendWindow*2),
 		done:      make(chan struct{}),
+		startedAt: time.Now(),
 		pending:   map[uint64][]byte{},
 		onClose: func() {
 			c.mu.Lock()
@@ -328,6 +363,7 @@ func (c *Client) getOrCreateTCPServiceProxy(peerID, bindName, service, sessionID
 	go proxy.sender.run()
 	go c.runTCPServiceProxyInbound(proxy)
 	go c.runTCPServiceProxyOutbound(proxy)
+	c.recordEvent("tcp", proxy.peerID, proxy.peerName, "tcp_publish_opened", fmt.Sprintf("bind=%s service=%s session=%s target=%s", proxy.bindName, proxy.service, proxy.sessionID, proxy.target))
 	return proxy, nil
 }
 
@@ -338,6 +374,11 @@ func (c *Client) runTCPServiceProxyOutbound(proxy *serviceProxy) {
 	})
 	if err != nil && !errors.Is(err, net.ErrClosed) {
 		logx.Warnf("tcp publish proxy %s/%s read failed: %v", proxy.peerID, proxy.service, err)
+	}
+	if err == nil || errors.Is(err, io.EOF) {
+		c.recordEvent("tcp", proxy.peerID, proxy.peerName, "tcp_publish_local_close", fmt.Sprintf("bind=%s service=%s session=%s target=%s", proxy.bindName, proxy.service, proxy.sessionID, proxy.target))
+	} else if !errors.Is(err, net.ErrClosed) {
+		c.recordEvent("tcp", proxy.peerID, proxy.peerName, "tcp_publish_local_error", fmt.Sprintf("bind=%s service=%s session=%s target=%s err=%v", proxy.bindName, proxy.service, proxy.sessionID, proxy.target, err))
 	}
 	_ = c.sendServicePayload(proxy.peerID, proto.ServicePayload{
 		Kind:      proto.DataKindTCPClose,
@@ -359,6 +400,7 @@ func (c *Client) runTCPServiceProxyInbound(proxy *serviceProxy) {
 		}
 		proxy.touch()
 		if frame.close {
+			c.recordEvent("tcp", proxy.peerID, proxy.peerName, "tcp_publish_remote_close", fmt.Sprintf("bind=%s service=%s session=%s target=%s err=%s", proxy.bindName, proxy.service, proxy.sessionID, proxy.target, firstNonEmpty(frame.errText, "-")))
 			proxy.close()
 			return
 		}
@@ -370,6 +412,7 @@ func (c *Client) runTCPServiceProxyInbound(proxy *serviceProxy) {
 		for _, chunk := range ready {
 			if err := writeAll(proxy.tcpConn, chunk); err != nil {
 				logx.Warnf("tcp publish proxy %s/%s write failed: %v", proxy.peerID, proxy.service, err)
+				c.recordEvent("tcp", proxy.peerID, proxy.peerName, "tcp_publish_write_failed", fmt.Sprintf("bind=%s service=%s session=%s target=%s err=%v", proxy.bindName, proxy.service, proxy.sessionID, proxy.target, err))
 				_ = c.sendServicePayload(proxy.peerID, proto.ServicePayload{
 					Kind:      proto.DataKindTCPClose,
 					Protocol:  config.ServiceProtocolTCP,
@@ -393,6 +436,22 @@ func (c *Client) runTCPServiceProxyInbound(proxy *serviceProxy) {
 			})
 		}
 	}
+}
+
+func (p *serviceProxy) snapshotStatus() (state string, startedAt, lastSeen time.Time, bufferedInbound, unackedOutbound int) {
+	if p == nil {
+		return "closed", time.Time{}, time.Time{}, 0, 0
+	}
+	p.mu.Lock()
+	state = "open"
+	startedAt = p.startedAt
+	bufferedInbound = len(p.pending)
+	p.mu.Unlock()
+	lastSeen = p.lastSeenTime()
+	if p.sender != nil {
+		unackedOutbound = p.sender.pendingCount()
+	}
+	return state, startedAt, lastSeen, bufferedInbound, unackedOutbound
 }
 
 func (p *serviceProxy) close() {
@@ -440,6 +499,7 @@ func (c *Client) handleTCPOpen(peerID string, payload proto.ServicePayload) {
 	}
 	publish, ok := c.cfg.Publish[payload.Service]
 	if !ok || publish.Protocol != config.ServiceProtocolTCP {
+		c.recordEvent("tcp", peerID, c.peerDisplayNameByID(peerID), "tcp_open_rejected", fmt.Sprintf("bind=%s service=%s session=%s err=service_not_published", payload.BindName, payload.Service, payload.SessionID))
 		_ = c.sendServicePayload(peerID, proto.ServicePayload{
 			Kind:      proto.DataKindTCPOk,
 			Protocol:  config.ServiceProtocolTCP,
@@ -452,6 +512,7 @@ func (c *Client) handleTCPOpen(peerID string, payload proto.ServicePayload) {
 	}
 
 	if _, err := c.getOrCreateTCPServiceProxy(peerID, payload.BindName, payload.Service, payload.SessionID, publish.Local); err != nil {
+		c.recordEvent("tcp", peerID, c.peerDisplayNameByID(peerID), "tcp_open_rejected", fmt.Sprintf("bind=%s service=%s session=%s err=%v", payload.BindName, payload.Service, payload.SessionID, err))
 		_ = c.sendServicePayload(peerID, proto.ServicePayload{
 			Kind:      proto.DataKindTCPOk,
 			Protocol:  config.ServiceProtocolTCP,
@@ -462,6 +523,7 @@ func (c *Client) handleTCPOpen(peerID string, payload proto.ServicePayload) {
 		})
 		return
 	}
+	c.recordEvent("tcp", peerID, c.peerDisplayNameByID(peerID), "tcp_open_accepted", fmt.Sprintf("bind=%s service=%s session=%s target=%s", payload.BindName, payload.Service, payload.SessionID, publish.Local))
 
 	_ = c.sendServicePayload(peerID, proto.ServicePayload{
 		Kind:      proto.DataKindTCPOk,
@@ -488,6 +550,7 @@ func (c *Client) handleTCPOpenResult(peerID string, payload proto.ServicePayload
 	}
 	if payload.Error != "" {
 		stream.resolveOpen(errors.New(payload.Error))
+		c.recordEvent("tcp", peerID, stream.peerName, "tcp_open_failed", fmt.Sprintf("bind=%s service=%s session=%s err=%s", stream.bindName, stream.service, stream.sessionID, payload.Error))
 		return
 	}
 	stream.resolveOpen(nil)
@@ -510,6 +573,7 @@ func (c *Client) handleTCPData(peerID string, payload proto.ServicePayload) {
 		if stream != nil && stream.peerID == peerID {
 			if !stream.enqueueInbound(tcpFrameEvent{seq: payload.StreamSeq, payload: slices.Clone(payload.Payload)}) {
 				logx.Warnf("bind %s inbound tcp queue full; closing stream %s", bind.name, payload.SessionID)
+				c.recordEvent("tcp", peerID, stream.peerName, "tcp_bind_queue_overflow", fmt.Sprintf("bind=%s service=%s session=%s", stream.bindName, stream.service, stream.sessionID))
 				stream.close()
 			}
 			return
@@ -519,6 +583,7 @@ func (c *Client) handleTCPData(peerID string, payload proto.ServicePayload) {
 	if proxy != nil && proxy.protocol == config.ServiceProtocolTCP {
 		if !proxy.enqueueInbound(tcpFrameEvent{seq: payload.StreamSeq, payload: slices.Clone(payload.Payload)}) {
 			logx.Warnf("tcp publish proxy inbound queue full; closing stream %s", payload.SessionID)
+			c.recordEvent("tcp", peerID, proxy.peerName, "tcp_publish_queue_overflow", fmt.Sprintf("bind=%s service=%s session=%s target=%s", proxy.bindName, proxy.service, proxy.sessionID, proxy.target))
 			proxy.close()
 		}
 	}

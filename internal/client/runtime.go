@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -16,6 +17,11 @@ func (c *Client) cleanupStaleSessions() {
 
 	for _, bind := range c.binds {
 		var staleStreams []*tcpBindStream
+		var staleStreamEvents []struct {
+			peerID   string
+			peerName string
+			detail   string
+		}
 		bind.mu.Lock()
 		for sessionID, session := range bind.sessions {
 			if now.Sub(session.lastSeen) <= bindSessionTTL {
@@ -29,14 +35,31 @@ func (c *Client) cleanupStaleSessions() {
 			}
 			delete(bind.tcpStreams, sessionID)
 			staleStreams = append(staleStreams, stream)
+			staleStreamEvents = append(staleStreamEvents, struct {
+				peerID   string
+				peerName string
+				detail   string
+			}{
+				peerID:   stream.peerID,
+				peerName: stream.peerName,
+				detail:   "bind=" + stream.bindName + " service=" + stream.service + " session=" + sessionID + " reason=idle_timeout",
+			})
 		}
 		bind.mu.Unlock()
+		for _, event := range staleStreamEvents {
+			c.recordEvent("tcp", event.peerID, event.peerName, "tcp_bind_idle_timeout", event.detail)
+		}
 		for _, stream := range staleStreams {
 			stream.close()
 		}
 	}
 
 	var staleProxies []*serviceProxy
+	var staleProxyEvents []struct {
+		peerID   string
+		peerName string
+		detail   string
+	}
 	c.mu.Lock()
 	for key, proxy := range c.serviceProxies {
 		ttl := serviceProxyTTL
@@ -48,8 +71,22 @@ func (c *Client) cleanupStaleSessions() {
 		}
 		delete(c.serviceProxies, key)
 		staleProxies = append(staleProxies, proxy)
+		if proxy.protocol == config.ServiceProtocolTCP {
+			staleProxyEvents = append(staleProxyEvents, struct {
+				peerID   string
+				peerName string
+				detail   string
+			}{
+				peerID:   proxy.peerID,
+				peerName: proxy.peerName,
+				detail:   "bind=" + proxy.bindName + " service=" + proxy.service + " session=" + proxy.sessionID + " target=" + proxy.target + " reason=idle_timeout",
+			})
+		}
 	}
 	c.mu.Unlock()
+	for _, event := range staleProxyEvents {
+		c.recordEvent("tcp", event.peerID, event.peerName, "tcp_publish_idle_timeout", event.detail)
+	}
 	for _, proxy := range staleProxies {
 		proxy.close()
 	}
@@ -80,6 +117,7 @@ func (c *Client) resetTransportState(reason string) {
 	}
 	c.mu.Unlock()
 
+	closedStreamCount := 0
 	for _, bind := range binds {
 		var streams []*tcpBindStream
 		bind.mu.Lock()
@@ -89,12 +127,16 @@ func (c *Client) resetTransportState(reason string) {
 			streams = append(streams, stream)
 		}
 		bind.mu.Unlock()
+		closedStreamCount += len(streams)
 		for _, stream := range streams {
 			stream.close()
 		}
 	}
 	for _, proxy := range proxies {
 		proxy.close()
+	}
+	if closedStreamCount > 0 || len(proxies) > 0 {
+		c.recordEvent("tcp", "", "", "tcp_transport_reset", fmt.Sprintf("reason=%s streams=%d proxies=%d", reason, closedStreamCount, len(proxies)))
 	}
 }
 

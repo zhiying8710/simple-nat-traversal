@@ -156,6 +156,13 @@ CLI 也可以辅助查看：
 ./snt -config ./client.json -overview
 ./snt -config ./client.json -trace
 ./snt -config ./client.json -network
+./snt -config ./client.json -routes
 ```
+
+建议：
+
+- UDP 打洞是否命中，优先看 `-trace`
+- TCP 绑定是否已经建链、是否被清理，优先看 `-routes` 里的 `tcp_bind_streams` / `tcp_publish_proxies`
+- 如果 TCP 会话异常关闭，再看 `-trace` 最近事件里的 `tcp_open_failed`、`tcp_bind_remote_close`、`tcp_transport_reset` 等原因
 
 如果双方网络非常严格，纯 UDP 打洞可能仍然失败，这属于当前产品边界。

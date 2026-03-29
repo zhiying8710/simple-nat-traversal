@@ -485,6 +485,151 @@ func TestTCPPortForwardRecoversAfterPeerKick(t *testing.T) {
 	assertContextExit(t, <-clientErrCh)
 }
 
+func TestTCPPortForwardRecoversAfterPeerRestart(t *testing.T) {
+	t.Parallel()
+
+	rootCtx, rootCancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer rootCancel()
+
+	httpAddr := reserveTCPAddr(t)
+	udpAddr := reserveUDPAddr(t)
+	adminA := reserveTCPAddr(t)
+	adminB1 := reserveTCPAddr(t)
+	adminB2 := reserveTCPAddr(t)
+	echoAddr := reserveTCPAddr(t)
+	bindAddr := reserveTCPAddr(t)
+
+	srv, err := server.New(config.ServerConfig{
+		HTTPListen:    httpAddr,
+		UDPListen:     udpAddr,
+		PublicUDPAddr: udpAddr,
+		Password:      "tcp-restart-password-1234",
+		AdminPassword: "tcp-restart-admin-password-1234",
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		serverErrCh <- srv.Run(rootCtx)
+	}()
+	waitForHTTPHealth(t, rootCtx, "http://"+httpAddr+"/healthz")
+
+	echoLn, err := net.Listen("tcp", echoAddr)
+	if err != nil {
+		t.Fatalf("listen tcp echo server: %v", err)
+	}
+	defer echoLn.Close()
+	go runTCPEchoServer(echoLn)
+
+	clientErrCh := make(chan error, 3)
+	go func() {
+		clientErrCh <- client.Run(rootCtx, config.ClientConfig{
+			ServerURL:     "http://" + httpAddr,
+			Password:      "tcp-restart-password-1234",
+			AdminPassword: "tcp-restart-admin-password-1234",
+			DeviceName:    "mac-a",
+			UDPListen:     "127.0.0.1:0",
+			AdminListen:   adminA,
+			Binds: map[string]config.BindConfig{
+				"win-rdp": {
+					Protocol: config.ServiceProtocolTCP,
+					Peer:     "win-b",
+					Service:  "rdp",
+					Local:    bindAddr,
+				},
+			},
+		})
+	}()
+
+	peerCfg1 := config.ClientConfig{
+		ServerURL:     "http://" + httpAddr,
+		Password:      "tcp-restart-password-1234",
+		AdminPassword: "tcp-restart-admin-password-1234",
+		DeviceName:    "win-b",
+		UDPListen:     "127.0.0.1:0",
+		AdminListen:   adminB1,
+		Publish: map[string]config.PublishConfig{
+			"rdp": {
+				Protocol: config.ServiceProtocolTCP,
+				Local:    echoAddr,
+			},
+		},
+	}
+	if _, _, err := config.EnsureClientIdentity(&peerCfg1); err != nil {
+		t.Fatalf("ensure peer identity: %v", err)
+	}
+
+	peerCtx1, peerCancel1 := context.WithCancel(rootCtx)
+	go func() {
+		clientErrCh <- client.Run(peerCtx1, peerCfg1)
+	}()
+
+	waitForPeerConnected(t, rootCtx, config.ClientConfig{AdminListen: adminA}, "win-b")
+
+	conn, err := net.Dial("tcp", bindAddr)
+	if err != nil {
+		t.Fatalf("dial local tcp bind: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("restart-before-echo")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write initial tcp payload: %v", err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read initial tcp payload: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("unexpected initial tcp echo payload")
+	}
+
+	waitForBindActiveSessions(t, rootCtx, config.ClientConfig{AdminListen: adminA}, "win-rdp", 1)
+	waitForActiveServiceProxies(t, rootCtx, config.ClientConfig{AdminListen: adminB1}, 1)
+
+	peerCancel1()
+	assertContextExit(t, <-clientErrCh)
+	waitForPeerAbsent(t, rootCtx, config.ClientConfig{AdminListen: adminA}, "win-b")
+	waitForBindActiveSessions(t, rootCtx, config.ClientConfig{AdminListen: adminA}, "win-rdp", 0)
+	waitForTCPConnClosed(t, conn)
+
+	peerCfg2 := peerCfg1
+	peerCfg2.AdminListen = adminB2
+	peerCtx2, peerCancel2 := context.WithCancel(rootCtx)
+	defer peerCancel2()
+	go func() {
+		clientErrCh <- client.Run(peerCtx2, peerCfg2)
+	}()
+
+	waitForPeerConnected(t, rootCtx, config.ClientConfig{AdminListen: adminA}, "win-b")
+	waitForActiveServiceProxies(t, rootCtx, config.ClientConfig{AdminListen: adminB2}, 0)
+
+	recoveredConn, err := net.Dial("tcp", bindAddr)
+	if err != nil {
+		t.Fatalf("dial local tcp bind after restart: %v", err)
+	}
+	defer recoveredConn.Close()
+
+	payload2 := []byte("restart-after-echo")
+	if _, err := recoveredConn.Write(payload2); err != nil {
+		t.Fatalf("write tcp payload after restart: %v", err)
+	}
+	got2 := make([]byte, len(payload2))
+	if _, err := io.ReadFull(recoveredConn, got2); err != nil {
+		t.Fatalf("read tcp payload after restart: %v", err)
+	}
+	if !bytes.Equal(got2, payload2) {
+		t.Fatalf("unexpected tcp echo payload after restart")
+	}
+
+	rootCancel()
+	assertContextExit(t, <-serverErrCh)
+	assertContextExit(t, <-clientErrCh)
+	assertContextExit(t, <-clientErrCh)
+}
+
 func TestGracefulLeaveAllowsImmediateReconnect(t *testing.T) {
 	t.Parallel()
 

@@ -124,6 +124,15 @@ func (s *tcpReliableSender) close() {
 	s.mu.Unlock()
 }
 
+func (s *tcpReliableSender) pendingCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending)
+}
+
 func (s *tcpReliableSender) resendPending() {
 	now := time.Now()
 

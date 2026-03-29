@@ -70,6 +70,12 @@
 
 这三个区域联合判断。
 
+如果是 TCP 场景，再重点看：
+
+- `routes` 里的 `tcp_bind_streams` / `tcp_publish_proxies`
+- `trace` 里的 `tcp_runtime`
+- 最近事件里是否出现 `tcp_open_failed`、`tcp_bind_remote_close`、`tcp_peer_cleanup` 这类条目
+
 ## 安装包说明
 
 - Windows 建议使用安装器 `setup.exe`
@@ -87,6 +93,11 @@
 ./snt -config ./client.json -trace
 ./snt -config ./client.json -network
 ```
+
+其中：
+
+- `-routes` 更适合看当前 TCP 会话是否已经建立
+- `-trace` 更适合看打洞候选命中、重连原因和最近的 TCP 关闭/恢复事件
 
 ## 什么时候用 GUI
 

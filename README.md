@@ -206,6 +206,11 @@ go run ./cmd/snt -config ./examples/client-macos.json -trace
 go run ./cmd/snt -config ./examples/client-macos.json -network
 ```
 
+说明：
+
+- `-routes` 会显示 `publish` / `bind` 概览，以及当前活动中的 `tcp_bind_streams` / `tcp_publish_proxies`
+- `-trace` 除了 candidate 命中信息外，还会显示当前 `tcp_runtime` 和最近的 TCP 打开/关闭/清理事件
+
 或者直接请求本地管理接口：
 
 ```bash
