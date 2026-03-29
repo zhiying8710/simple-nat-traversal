@@ -2,8 +2,8 @@
 
 dist/
 
-snt
-snt-gui
-snt-server
-*.exe
-*.test
+/snt
+/snt-gui
+/snt-server
+/*.exe
+/*.test
