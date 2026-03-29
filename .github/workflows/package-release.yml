@@ -6,6 +6,12 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      overwrite_fixed_release:
+        description: Replace the shared test-build release from the selected ref
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -36,9 +42,31 @@ jobs:
           set -euo pipefail
           go test ./...
 
-  build-linux:
+  prepare-release:
     runs-on: ubuntu-latest
     needs: test
+    if: github.ref_name == 'main' || github.ref_name == 'master' || (github.event_name == 'workflow_dispatch' && inputs.overwrite_fixed_release)
+    steps:
+      - name: Replace fixed draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release delete "${RELEASE_TAG}" --cleanup-tag --yes || true
+          gh release create "${RELEASE_TAG}" \
+            --draft \
+            --target "${GITHUB_SHA}" \
+            --title "Automated Test Build" \
+            --notes "Auto-packaged from commit ${GITHUB_SHA}."
+
+  build-linux:
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - prepare-release
+    if: needs.prepare-release.result == 'success'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -77,19 +105,24 @@ jobs:
           tar -C "${DIST}" -czf "${DIST}/server-linux-amd64.tar.gz" server-linux-amd64
           tar -C "${DIST}" -czf "${DIST}/client-linux-amd64.tar.gz" client-linux-amd64
 
-      - name: Upload Linux archives
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux
-          path: |
-            ${{ runner.temp }}/dist/server-linux-amd64.tar.gz
-            ${{ runner.temp }}/dist/client-linux-amd64.tar.gz
-          if-no-files-found: error
-          retention-days: 7
+      - name: Upload Linux archives to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${RUNNER_TEMP}/dist/server-linux-amd64.tar.gz" \
+            "${RUNNER_TEMP}/dist/client-linux-amd64.tar.gz" \
+            --clobber
 
   build-macos:
     runs-on: macos-14
-    needs: test
+    needs:
+      - test
+      - prepare-release
+    if: needs.prepare-release.result == 'success'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -125,17 +158,23 @@ jobs:
 
           tar -C "${DIST}" -czf "${DIST}/client-macos-arm64.tar.gz" client-macos-arm64
 
-      - name: Upload macOS archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-macos
-          path: ${{ runner.temp }}/dist/client-macos-arm64.tar.gz
-          if-no-files-found: error
-          retention-days: 7
+      - name: Upload macOS archive to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${RUNNER_TEMP}/dist/client-macos-arm64.tar.gz" \
+            --clobber
 
   build-windows:
     runs-on: windows-latest
-    needs: test
+    needs:
+      - test
+      - prepare-release
+    if: needs.prepare-release.result == 'success'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -186,37 +225,32 @@ jobs:
 
           Compress-Archive -Path (Join-Path $clientDir "*") -DestinationPath (Join-Path $dist "client-windows-amd64.zip") -Force
 
-      - name: Upload Windows archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-windows
-          path: ${{ runner.temp }}/dist/client-windows-amd64.zip
-          if-no-files-found: error
-          retention-days: 7
+      - name: Upload Windows archive to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh release upload $env:RELEASE_TAG (Join-Path $env:RUNNER_TEMP "dist/client-windows-amd64.zip") --clobber
 
   publish:
     runs-on: ubuntu-latest
-    if: github.ref_name == 'main' || github.ref_name == 'master'
     needs:
+      - prepare-release
       - build-linux
       - build-macos
       - build-windows
+    if: needs.prepare-release.result == 'success'
     steps:
-      - name: Download packaged archives
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Replace fixed test release
+      - name: Publish draft release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release delete "${RELEASE_TAG}" --cleanup-tag --yes || true
-          gh release create "${RELEASE_TAG}" release-assets/* \
-            --target "${GITHUB_SHA}" \
+          gh release edit "${RELEASE_TAG}" \
+            --draft=false \
             --title "Automated Test Build" \
             --notes "Auto-packaged from commit ${GITHUB_SHA}."
