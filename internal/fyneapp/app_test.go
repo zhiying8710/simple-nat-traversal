@@ -585,6 +585,9 @@ func TestUpsertPublishAndBindPreserveExistingProtocol(t *testing.T) {
 	app.loadConfigIntoForm()
 
 	app.publishSelect.SetSelected("rdp")
+	if app.publishProtocol.Selected != config.ServiceProtocolTCP {
+		t.Fatalf("expected publish protocol selector to load tcp, got %q", app.publishProtocol.Selected)
+	}
 	app.publishNameEntry.SetText("rdp")
 	app.publishLocalEntry.SetText("127.0.0.1:3390")
 	if err := app.upsertPublish(); err != nil {
@@ -592,6 +595,9 @@ func TestUpsertPublishAndBindPreserveExistingProtocol(t *testing.T) {
 	}
 
 	app.bindSelect.SetSelected("win-rdp")
+	if app.bindProtocol.Selected != config.ServiceProtocolTCP {
+		t.Fatalf("expected bind protocol selector to load tcp, got %q", app.bindProtocol.Selected)
+	}
 	app.bindNameEntry.SetText("win-rdp")
 	app.bindPeerEntry.SetText("winpc")
 	app.bindServiceEntry.SetText("rdp")
@@ -609,6 +615,56 @@ func TestUpsertPublishAndBindPreserveExistingProtocol(t *testing.T) {
 	}
 	if saved.Binds["win-rdp"].Protocol != config.ServiceProtocolTCP || saved.Binds["win-rdp"].Local != "127.0.0.1:13390" {
 		t.Fatalf("bind protocol/local not preserved: %+v", saved.Binds)
+	}
+}
+
+func TestUpsertPublishAndBindUseSelectedProtocol(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	cfg := config.ClientDefaults()
+	cfg.ServerURL = "http://127.0.0.1:8080"
+	cfg.AllowInsecureHTTP = true
+	cfg.Password = "saved-password"
+	cfg.DeviceName = "saved-device"
+	if err := config.SaveClientConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+	app.loadConfigIntoForm()
+
+	app.publishProtocol.SetSelected(config.ServiceProtocolTCP)
+	app.publishNameEntry.SetText("ssh")
+	app.publishLocalEntry.SetText("127.0.0.1:22")
+	if err := app.upsertPublish(); err != nil {
+		t.Fatalf("upsertPublish: %v", err)
+	}
+	if app.publishProtocol.Selected != config.ServiceProtocolUDP {
+		t.Fatalf("expected publish protocol selector to reset to udp, got %q", app.publishProtocol.Selected)
+	}
+
+	app.bindProtocol.SetSelected(config.ServiceProtocolTCP)
+	app.bindNameEntry.SetText("linux-ssh")
+	app.bindPeerEntry.SetText("linux-box")
+	app.bindServiceEntry.SetText("ssh")
+	app.bindLocalEntry.SetText("127.0.0.1:10022")
+	if err := app.upsertBind(); err != nil {
+		t.Fatalf("upsertBind: %v", err)
+	}
+	if app.bindProtocol.Selected != config.ServiceProtocolUDP {
+		t.Fatalf("expected bind protocol selector to reset to udp, got %q", app.bindProtocol.Selected)
+	}
+
+	saved, err := config.LoadClientConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if saved.Publish["ssh"].Protocol != config.ServiceProtocolTCP || saved.Publish["ssh"].Local != "127.0.0.1:22" {
+		t.Fatalf("publish protocol/local not saved from selector: %+v", saved.Publish)
+	}
+	if saved.Binds["linux-ssh"].Protocol != config.ServiceProtocolTCP || saved.Binds["linux-ssh"].Local != "127.0.0.1:10022" {
+		t.Fatalf("bind protocol/local not saved from selector: %+v", saved.Binds)
 	}
 }
 

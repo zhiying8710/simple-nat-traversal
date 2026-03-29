@@ -48,6 +48,11 @@ type discoveredService struct {
 	Protocol    string
 }
 
+var serviceProtocolOptions = []string{
+	config.ServiceProtocolUDP,
+	config.ServiceProtocolTCP,
+}
+
 func (d discoveredService) normalizedProtocol() string {
 	protocol := strings.TrimSpace(d.Protocol)
 	if protocol == "" {
@@ -66,6 +71,30 @@ func (d discoveredService) displayServiceName() string {
 
 func (d discoveredService) optionLabel() string {
 	return fmt.Sprintf("%s / %s", d.DeviceName, d.displayServiceName())
+}
+
+func newServiceProtocolSelect() *widget.Select {
+	selectWidget := widget.NewSelect(serviceProtocolOptions, nil)
+	selectWidget.SetSelected(config.ServiceProtocolUDP)
+	return selectWidget
+}
+
+func setServiceProtocolSelection(selectWidget *widget.Select, protocol string) {
+	if selectWidget == nil {
+		return
+	}
+	normalized, err := config.NormalizeServiceProtocol(protocol)
+	if err != nil {
+		normalized = config.ServiceProtocolUDP
+	}
+	selectWidget.SetSelected(normalized)
+}
+
+func selectedServiceProtocol(selectWidget *widget.Select) (string, error) {
+	if selectWidget == nil {
+		return config.ServiceProtocolUDP, nil
+	}
+	return config.NormalizeServiceProtocol(selectWidget.Selected)
 }
 
 type App struct {
@@ -102,10 +131,12 @@ type App struct {
 	logLevelSelect       *widget.Select
 
 	publishSelect     *widget.Select
+	publishProtocol   *widget.Select
 	publishNameEntry  *widget.Entry
 	publishLocalEntry *widget.Entry
 
 	bindSelect       *widget.Select
+	bindProtocol     *widget.Select
 	bindNameEntry    *widget.Entry
 	bindPeerEntry    *widget.Entry
 	bindServiceEntry *widget.Entry
@@ -296,6 +327,7 @@ func (a *App) buildUI() {
 	a.publishSelect = widget.NewSelect(nil, func(name string) {
 		a.loadSelectedPublish(name)
 	})
+	a.publishProtocol = newServiceProtocolSelect()
 	a.publishNameEntry = widget.NewEntry()
 	a.publishNameEntry.SetPlaceHolder(a.t("publish_placeholder_name"))
 	a.publishLocalEntry = widget.NewEntry()
@@ -304,6 +336,7 @@ func (a *App) buildUI() {
 	a.bindSelect = widget.NewSelect(nil, func(name string) {
 		a.loadSelectedBind(name)
 	})
+	a.bindProtocol = newServiceProtocolSelect()
 	a.bindNameEntry = widget.NewEntry()
 	a.bindNameEntry.SetPlaceHolder(a.t("bind_placeholder_name"))
 	a.bindPeerEntry = widget.NewEntry()
@@ -464,6 +497,7 @@ func (a *App) buildUI() {
 			a.publishGrid,
 			container.NewGridWithColumns(2, a.publishSelect, widget.NewLabel("")),
 			widget.NewForm(
+				widget.NewFormItem(a.t("service_protocol"), a.publishProtocol),
 				widget.NewFormItem(a.t("publish_name"), a.publishNameEntry),
 				widget.NewFormItem(a.t("publish_local"), a.publishLocalEntry),
 			),
@@ -489,6 +523,7 @@ func (a *App) buildUI() {
 			a.bindGrid,
 			container.NewGridWithColumns(2, a.bindSelect, widget.NewLabel("")),
 			widget.NewForm(
+				widget.NewFormItem(a.t("service_protocol"), a.bindProtocol),
 				widget.NewFormItem(a.t("bind_name"), a.bindNameEntry),
 				widget.NewFormItem(a.t("bind_peer"), a.bindPeerEntry),
 				widget.NewFormItem(a.t("bind_service"), a.bindServiceEntry),
@@ -583,6 +618,8 @@ func (a *App) fillConfigForm(cfg config.ClientConfig, exists bool) {
 	a.udpListenEntry.SetText(cfg.UDPListen)
 	a.adminListenEntry.SetText(cfg.AdminListen)
 	a.logLevelSelect.SetSelected(cfg.LogLevel)
+	setServiceProtocolSelection(a.publishProtocol, config.ServiceProtocolUDP)
+	setServiceProtocolSelection(a.bindProtocol, config.ServiceProtocolUDP)
 
 	if exists && strings.TrimSpace(cfg.Password) != "" {
 		a.passwordStatusLabel.SetText(a.t("password_saved"))
@@ -798,14 +835,14 @@ func (a *App) upsertPublish() error {
 	if name == "" || local == "" {
 		return errors.New("publish name and local address are required")
 	}
+	protocol, err := selectedServiceProtocol(a.publishProtocol)
+	if err != nil {
+		return err
+	}
 	a.mu.Lock()
 	publish := clonePublishMap(a.draftPublish)
 	binds := cloneBindMap(a.draftBinds)
 	a.mu.Unlock()
-	protocol := config.ServiceProtocolUDP
-	if existing, ok := publish[name]; ok && strings.TrimSpace(existing.Protocol) != "" {
-		protocol = existing.Protocol
-	}
 	publish[name] = config.PublishConfig{
 		Protocol: protocol,
 		Local:    local,
@@ -838,6 +875,7 @@ func (a *App) loadSelectedPublish(name string) {
 	}
 	a.publishNameEntry.SetText(name)
 	a.publishLocalEntry.SetText(publish.Local)
+	setServiceProtocolSelection(a.publishProtocol, publish.Protocol)
 }
 
 func (a *App) upsertBind() error {
@@ -848,14 +886,14 @@ func (a *App) upsertBind() error {
 	if name == "" || peer == "" || service == "" || local == "" {
 		return errors.New("bind name, peer, service and local address are required")
 	}
+	protocol, err := selectedServiceProtocol(a.bindProtocol)
+	if err != nil {
+		return err
+	}
 	a.mu.Lock()
 	publish := clonePublishMap(a.draftPublish)
 	binds := cloneBindMap(a.draftBinds)
 	a.mu.Unlock()
-	protocol := config.ServiceProtocolUDP
-	if existing, ok := binds[name]; ok && strings.TrimSpace(existing.Protocol) != "" {
-		protocol = existing.Protocol
-	}
 	binds[name] = config.BindConfig{
 		Protocol: protocol,
 		Peer:     peer,
@@ -892,6 +930,7 @@ func (a *App) loadSelectedBind(name string) {
 	a.bindPeerEntry.SetText(bind.Peer)
 	a.bindServiceEntry.SetText(bind.Service)
 	a.bindLocalEntry.SetText(bind.Local)
+	setServiceProtocolSelection(a.bindProtocol, bind.Protocol)
 }
 
 func (a *App) quickBindDiscoveredService() error {
@@ -938,9 +977,11 @@ func (a *App) persistServiceDrafts(publish map[string]config.PublishConfig, bind
 		return err
 	}
 	a.publishSelect.SetSelected("")
+	setServiceProtocolSelection(a.publishProtocol, config.ServiceProtocolUDP)
 	a.publishNameEntry.SetText("")
 	a.publishLocalEntry.SetText("")
 	a.bindSelect.SetSelected("")
+	setServiceProtocolSelection(a.bindProtocol, config.ServiceProtocolUDP)
 	a.bindNameEntry.SetText("")
 	a.bindPeerEntry.SetText("")
 	a.bindServiceEntry.SetText("")

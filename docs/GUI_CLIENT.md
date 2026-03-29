@@ -34,12 +34,13 @@
   - `auto_connect`
   - `udp_listen`
   - `admin_listen`
-  - 结构化 `publish`
-  - 结构化 `bind`
+  - 结构化 `publish` / `bind`
+  - `publish.protocol` / `bind.protocol` 可直接在 GUI 中选择 `udp/tcp`
 - 服务管理：
-  - 通过 GUI 表单新增/修改/删除本地 `publish`
+  - 通过 GUI 表单新增/修改/删除本地 `publish` / `bind`
+  - 在服务编辑页直接选择 `udp/tcp`
   - 自动发现其他在线设备发布的服务
-  - 对发现到的远端服务执行“一键 bind 到本机随机端口”
+  - 对发现到的远端服务执行“一键 bind 到本机随机端口”，并保留远端服务的协议信息
 - 运行控制：
   - 启动客户端
   - 停止客户端

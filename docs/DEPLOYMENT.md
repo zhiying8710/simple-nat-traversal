@@ -67,8 +67,30 @@ CLI 使用时可以先准备 `client.json`：
   "auto_connect": true,
   "udp_listen": ":0",
   "admin_listen": "127.0.0.1:19090",
-  "publish": {},
-  "binds": {}
+  "publish": {
+    "game": {
+      "protocol": "udp",
+      "local": "127.0.0.1:19132"
+    },
+    "ssh": {
+      "protocol": "tcp",
+      "local": "127.0.0.1:22"
+    }
+  },
+  "binds": {
+    "win-game": {
+      "protocol": "udp",
+      "peer": "winpc",
+      "service": "game",
+      "local": "127.0.0.1:29132"
+    },
+    "win-rdp": {
+      "protocol": "tcp",
+      "peer": "winpc",
+      "service": "rdp",
+      "local": "127.0.0.1:13389"
+    }
+  }
 }
 ```
 
@@ -78,6 +100,7 @@ CLI 使用时可以先准备 `client.json`：
 - 客户端会在首次保存配置或首次运行时自动生成稳定设备身份并写回配置
 - GUI 在首次启动时即使还没有 `client.json` 也可以直接打开，保存后会写入系统用户配置目录
 - GUI 首次无配置启动时会自动生成一个尽量不重名的 `device_name`
+- `publish.*.protocol` / `binds.*.protocol` 可选 `udp` 或 `tcp`
 - 如果联调阶段需要临时直连公网 `http://...`，再显式加上 `"allow_insecure_http": true`；正式环境仍建议走反代后的 `https://...`
 
 ## 5. 启动 GUI
@@ -91,6 +114,7 @@ macOS / Windows 推荐直接启动 GUI：
 启动后会直接打开原生窗口，不再依赖浏览器。
 GUI 默认使用系统用户配置目录下的 `client.json`。
 如果 `auto_connect=true`，GUI 打开后会自动尝试拉起客户端。
+GUI 的服务管理页可以直接为每条 `publish` / `bind` 选择 `udp/tcp`。
 
 ## 6. 设置登录后自动启动
 

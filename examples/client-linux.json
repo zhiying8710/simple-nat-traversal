@@ -8,14 +8,26 @@
   "admin_listen": "127.0.0.1:19092",
   "publish": {
     "game": {
+      "protocol": "udp",
       "local": "127.0.0.1:19132"
+    },
+    "ssh": {
+      "protocol": "tcp",
+      "local": "127.0.0.1:22"
     }
   },
   "binds": {
     "mac-game": {
+      "protocol": "udp",
       "peer": "macbook-air",
       "service": "game",
       "local": "127.0.0.1:29132"
+    },
+    "win-rdp": {
+      "protocol": "tcp",
+      "peer": "winpc",
+      "service": "rdp",
+      "local": "127.0.0.1:13389"
     }
   }
 }

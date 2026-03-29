@@ -7,3 +7,4 @@ dist/
 /snt-server
 /*.exe
 /*.test
+.gocache

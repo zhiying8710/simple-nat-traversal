@@ -25,8 +25,8 @@
 - 客户端在会话失效、被服务端踢掉或设备长时间未注册后，会自动重新入网并重建 P2P 会话。
 - `auto_connect=true` 时，GUI 窗口启动后会自动尝试拉起客户端并自动建联。
 - GUI 支持在没有现成 `client.json` 的情况下直接启动，首次保存时会写入系统用户配置目录。
-- GUI 内置结构化的服务管理界面，可以直接新增/修改 `publish`，并发现其他设备的已发布服务后一键 `bind`。
-- 当前 GUI 服务编辑页还没有 `udp/tcp` 协议选择器；TCP 服务配置建议先用 CLI、向导或直接改 JSON。
+- GUI 内置结构化的服务管理界面，可以直接新增/修改 `publish` / `bind`，并为每条服务选择 `udp/tcp` 协议。
+- GUI 发现其他设备的已发布服务后，也可以一键 `bind` 到本机随机端口，并保留远端服务的协议信息。
 
 ## 明确边界
 
@@ -241,7 +241,7 @@ go run ./cmd/snt -config ./examples/client-macos.json -kick-device-id dev_xxx
 - 可直接管理开机启动
 - 不再暴露本地浏览器控制面，而是直接提供原生桌面窗口
 - GUI 的 `password` / `admin_password` 输入框默认不会回显已保存值；留空表示保持原值，勾选对应清空框才会删除已保存密码
-- 当前新增或编辑 TCP `publish` / `bind` 时，推荐先用 CLI / 向导 / JSON；GUI 服务编辑页后续再补协议选择
+- GUI 的 `publish` / `bind` 表单可直接选择 `udp` 或 `tcp`，适合在桌面端维护 RDP / SSH 这类 TCP 服务映射
 
 GUI 相关文档：
 
