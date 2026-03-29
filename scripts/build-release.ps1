@@ -54,16 +54,14 @@ function Ensure-WindowsToolchainPath {
   $roots += "C:\msys64"
   $roots += "C:\tools\msys64"
 
-  $suffixes = if ($Goarch -eq "arm64") {
-    @("opt\bin")
-  } else {
-    @("mingw64\bin")
+  $suffix = switch ($Goarch) {
+    "amd64" { "mingw64\bin" }
+    "arm64" { "clangarm64\bin" }
+    default { throw "unsupported Windows GUI packaging arch: $Goarch" }
   }
 
   foreach ($root in $roots) {
-    foreach ($suffix in $suffixes) {
-      Add-ToPathIfExists (Join-Path $root $suffix)
-    }
+    Add-ToPathIfExists (Join-Path $root $suffix)
   }
 }
 
@@ -103,10 +101,10 @@ function Build-GuiIfNativeHost {
 }
 
 function Build-WindowsGui {
-  param(
-    [string]$Goarch
-  )
-
+  $Goarch = $HostGoarch
+  if ($Goarch -ne "amd64" -and $Goarch -ne "arm64") {
+    throw "Windows installer packaging requires amd64 or arm64 host, current host is $Goarch"
+  }
   $guiOut = Join-Path $DistDir "snt-gui-$Version-windows-$Goarch.exe"
   $cliOut = Join-Path $DistDir "snt-$Version-windows-$Goarch.exe"
   $installerOut = Join-Path $DistDir "client-windows-$Goarch-setup.exe"
@@ -116,18 +114,16 @@ function Build-WindowsGui {
   $cc = if ($Goarch -eq "arm64") { $env:SNT_WINDOWS_CC_ARM64 } else { $env:SNT_WINDOWS_CC_AMD64 }
   $cxx = if ($Goarch -eq "arm64") { $env:SNT_WINDOWS_CXX_ARM64 } else { $env:SNT_WINDOWS_CXX_AMD64 }
   if ([string]::IsNullOrWhiteSpace($cc)) {
-    $cc = if ($Goarch -eq "arm64") { "aarch64-w64-mingw32-gcc" } else { "gcc" }
+    $cc = if ($Goarch -eq "arm64") { "clang" } else { "gcc" }
   }
   if ([string]::IsNullOrWhiteSpace($cxx)) {
-    $cxx = if ($Goarch -eq "arm64") { "aarch64-w64-mingw32-g++" } else { "g++" }
+    $cxx = if ($Goarch -eq "arm64") { "clang++" } else { "g++" }
   }
   if (-not (Get-Command $cc -ErrorAction SilentlyContinue)) {
-    Write-Host "skipping Windows $Goarch GUI packaging: compiler '$cc' not found in PATH"
-    return
+    throw "Windows $Goarch GUI packaging requires compiler '$cc' in PATH"
   }
   if (-not (Get-Command $cxx -ErrorAction SilentlyContinue)) {
-    Write-Host "skipping Windows $Goarch GUI packaging: compiler '$cxx' not found in PATH"
-    return
+    throw "Windows $Goarch GUI packaging requires compiler '$cxx' in PATH"
   }
 
   Write-Host "building $cliOut"
@@ -156,10 +152,9 @@ Build-One linux amd64 ./cmd/snt-server snt-server
 Build-One linux amd64 ./cmd/snt snt
 
 if ($HostGoos -eq "windows") {
-  Build-WindowsGui amd64
-  Build-WindowsGui arm64
+  Build-WindowsGui
 } else {
-  Write-Host "skipping Windows installer packaging: run this script on a Windows host with MinGW/Clang and Inno Setup installed"
+  Write-Host "skipping Windows installer packaging: run this script on a Windows host with MinGW and Inno Setup installed"
 }
 
 Remove-Item Env:GOOS -ErrorAction SilentlyContinue

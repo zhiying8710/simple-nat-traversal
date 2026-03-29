@@ -44,44 +44,67 @@ build_gui_if_native_host() {
   build_one "${goos}" "${goarch}" "${pkg}" "${name}"
 }
 
-build_macos_gui() {
+build_macos_gui_arch() {
   local goarch="$1"
-  local cli_out="${DIST_DIR}/snt-${VERSION}-darwin-${goarch}"
-  local gui_out="${DIST_DIR}/snt-gui-${VERSION}-darwin-${goarch}"
-  local dmg_out="${DIST_DIR}/client-macos-${goarch}.dmg"
+  local out="$2"
+  local clang_arch=""
+  case "${goarch}" in
+    amd64) clang_arch="x86_64" ;;
+    arm64) clang_arch="arm64" ;;
+    *)
+      echo "unsupported macOS arch: ${goarch}" >&2
+      exit 1
+      ;;
+  esac
+
+  local sdkroot
+  sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
+  env \
+    SDKROOT="${sdkroot}" \
+    CGO_ENABLED=1 \
+    GOOS=darwin \
+    GOARCH="${goarch}" \
+    CC="clang -arch ${clang_arch}" \
+    CXX="clang++ -arch ${clang_arch}" \
+    CGO_CFLAGS="-arch ${clang_arch}" \
+    CGO_CXXFLAGS="-arch ${clang_arch}" \
+    CGO_LDFLAGS="-arch ${clang_arch}" \
+    go build -ldflags "${LDFLAGS}" -o "${out}" ./cmd/snt-gui
+}
+
+build_macos_universal() {
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  local cli_arm64="${tmp_dir}/snt-arm64"
+  local cli_amd64="${tmp_dir}/snt-amd64"
+  local gui_arm64="${tmp_dir}/snt-gui-arm64"
+  local gui_amd64="${tmp_dir}/snt-gui-amd64"
+  local cli_out="${DIST_DIR}/snt-${VERSION}-darwin-universal"
+  local gui_out="${DIST_DIR}/snt-gui-${VERSION}-darwin-universal"
+  local dmg_out="${DIST_DIR}/client-macos-universal.dmg"
+
+  trap 'rm -rf "${tmp_dir}"' RETURN
 
   echo "building ${cli_out}"
-  GOOS=darwin GOARCH="${goarch}" go build -ldflags "${LDFLAGS}" -o "${cli_out}" ./cmd/snt
+  GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${cli_arm64}" ./cmd/snt
+  GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o "${cli_amd64}" ./cmd/snt
 
   echo "building ${gui_out}"
-  if [[ "${goarch}" == "amd64" ]]; then
-    local sdkroot
-    sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
-    env \
-      SDKROOT="${sdkroot}" \
-      CGO_ENABLED=1 \
-      GOOS=darwin \
-      GOARCH=amd64 \
-      CC="clang -arch x86_64" \
-      CXX="clang++ -arch x86_64" \
-      CGO_CFLAGS="-arch x86_64" \
-      CGO_CXXFLAGS="-arch x86_64" \
-      CGO_LDFLAGS="-arch x86_64" \
-      go build -ldflags "${LDFLAGS}" -o "${gui_out}" ./cmd/snt-gui
-  else
-    env CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${gui_out}" ./cmd/snt-gui
-  fi
+  build_macos_gui_arch arm64 "${gui_arm64}"
+  build_macos_gui_arch amd64 "${gui_amd64}"
+
+  lipo -create -output "${cli_out}" "${cli_arm64}" "${cli_amd64}"
+  lipo -create -output "${gui_out}" "${gui_arm64}" "${gui_amd64}"
 
   chmod +x "${ROOT_DIR}/scripts/package-macos.sh"
-  "${ROOT_DIR}/scripts/package-macos.sh" "${VERSION}" "${goarch}" "${gui_out}" "${cli_out}" "${dmg_out}"
+  "${ROOT_DIR}/scripts/package-macos.sh" "${VERSION}" "universal" "${gui_out}" "${cli_out}" "${dmg_out}"
 }
 
 build_one linux amd64 ./cmd/snt-server snt-server
 build_one linux amd64 ./cmd/snt snt
 
 if [[ "${HOST_GOOS}" == "darwin" ]]; then
-  build_macos_gui arm64
-  build_macos_gui amd64
+  build_macos_universal
 else
   echo "skipping macOS DMG packaging: run this script on macOS to build desktop packages"
 fi

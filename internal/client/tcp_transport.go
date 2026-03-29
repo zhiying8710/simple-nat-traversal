@@ -183,14 +183,29 @@ func (c *Client) handleTCPBindConn(bind *bindProxy, conn net.Conn) {
 	c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_open_started", fmt.Sprintf("bind=%s service=%s session=%s", stream.bindName, stream.service, stream.sessionID))
 
 	if err := c.openTCPStream(stream); err != nil {
-		logx.Warnf("bind %s open tcp stream failed: %v", bind.name, err)
-		c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_open_failed", fmt.Sprintf("bind=%s service=%s session=%s err=%v", stream.bindName, stream.service, stream.sessionID, err))
-		stream.close()
+		c.failTCPBindOpen(stream, err)
 		return
 	}
 	c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_open_ok", fmt.Sprintf("bind=%s service=%s session=%s", stream.bindName, stream.service, stream.sessionID))
 
 	go c.runTCPBindOutbound(stream)
+}
+
+func (c *Client) failTCPBindOpen(stream *tcpBindStream, err error) {
+	if stream == nil || err == nil {
+		return
+	}
+	logx.Warnf("bind %s open tcp stream failed: %v", stream.bindName, err)
+	c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_open_failed", fmt.Sprintf("bind=%s service=%s session=%s err=%v", stream.bindName, stream.service, stream.sessionID, err))
+	_ = c.sendServicePayload(stream.peerID, proto.ServicePayload{
+		Kind:      proto.DataKindTCPClose,
+		Protocol:  config.ServiceProtocolTCP,
+		BindName:  stream.bindName,
+		Service:   stream.service,
+		SessionID: stream.sessionID,
+		Error:     err.Error(),
+	})
+	stream.close()
 }
 
 func (c *Client) openTCPStream(stream *tcpBindStream) error {

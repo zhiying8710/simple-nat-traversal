@@ -120,12 +120,6 @@ jobs:
 
   build-macos:
     runs-on: macos-14
-    strategy:
-      fail-fast: false
-      matrix:
-        arch:
-          - arm64
-          - amd64
     needs:
       - test
       - prepare-release
@@ -149,30 +143,44 @@ jobs:
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-X simple-nat-traversal/internal/buildinfo.Version=${VERSION} -X simple-nat-traversal/internal/buildinfo.Commit=${COMMIT} -X simple-nat-traversal/internal/buildinfo.BuiltAt=${BUILT_AT}"
           DIST="${RUNNER_TEMP}/dist"
-          BIN_DIR="${RUNNER_TEMP}/bin-macos-${{ matrix.arch }}"
-          mkdir -p "${DIST}" "${BIN_DIR}"
+          TMP_DIR="${RUNNER_TEMP}/macos-universal-build"
+          BIN_DIR="${RUNNER_TEMP}/bin-macos-universal"
+          mkdir -p "${DIST}" "${TMP_DIR}" "${BIN_DIR}"
 
-          GOOS=darwin GOARCH=${{ matrix.arch }} go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt" ./cmd/snt
-
-          if [[ "${{ matrix.arch }}" == "amd64" ]]; then
-            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          build_macos_gui() {
+            local goarch="$1"
+            local out="$2"
+            local clang_arch
+            case "${goarch}" in
+              amd64) clang_arch="x86_64" ;;
+              arm64) clang_arch="arm64" ;;
+              *) echo "unsupported macOS arch: ${goarch}" >&2; exit 1 ;;
+            esac
+            local sdkroot
+            sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
             env \
-              SDKROOT="${SDKROOT}" \
+              SDKROOT="${sdkroot}" \
               CGO_ENABLED=1 \
               GOOS=darwin \
-              GOARCH=amd64 \
-              CC="clang -arch x86_64" \
-              CXX="clang++ -arch x86_64" \
-              CGO_CFLAGS="-arch x86_64" \
-              CGO_CXXFLAGS="-arch x86_64" \
-              CGO_LDFLAGS="-arch x86_64" \
-              go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt-gui" ./cmd/snt-gui
-          else
-            env CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt-gui" ./cmd/snt-gui
-          fi
+              GOARCH="${goarch}" \
+              CC="clang -arch ${clang_arch}" \
+              CXX="clang++ -arch ${clang_arch}" \
+              CGO_CFLAGS="-arch ${clang_arch}" \
+              CGO_CXXFLAGS="-arch ${clang_arch}" \
+              CGO_LDFLAGS="-arch ${clang_arch}" \
+              go build -ldflags "${LDFLAGS}" -o "${out}" ./cmd/snt-gui
+          }
+
+          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${TMP_DIR}/snt-arm64" ./cmd/snt
+          GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o "${TMP_DIR}/snt-amd64" ./cmd/snt
+          build_macos_gui arm64 "${TMP_DIR}/snt-gui-arm64"
+          build_macos_gui amd64 "${TMP_DIR}/snt-gui-amd64"
+
+          lipo -create -output "${BIN_DIR}/snt" "${TMP_DIR}/snt-arm64" "${TMP_DIR}/snt-amd64"
+          lipo -create -output "${BIN_DIR}/snt-gui" "${TMP_DIR}/snt-gui-arm64" "${TMP_DIR}/snt-gui-amd64"
 
           chmod +x "${BIN_DIR}/snt" "${BIN_DIR}/snt-gui" ./scripts/package-macos.sh
-          ./scripts/package-macos.sh "${VERSION}" "${{ matrix.arch }}" "${BIN_DIR}/snt-gui" "${BIN_DIR}/snt" "${DIST}/client-macos-${{ matrix.arch }}.dmg"
+          ./scripts/package-macos.sh "${VERSION}" "universal" "${BIN_DIR}/snt-gui" "${BIN_DIR}/snt" "${DIST}/client-macos-universal.dmg"
 
       - name: Upload macOS DMG to staging release
         shell: bash
@@ -182,27 +190,27 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "${STAGING_TAG}" \
-            "${RUNNER_TEMP}/dist/client-macos-${{ matrix.arch }}.dmg" \
+            "${RUNNER_TEMP}/dist/client-macos-universal.dmg" \
             --clobber
 
   build-windows:
-    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
+            runner: windows-latest
             msystem: MINGW64
             packages: mingw-w64-x86_64-gcc
             cc: gcc
             cxx: g++
-            path_prefix: ""
           - arch: arm64
-            msystem: MINGW64
-            packages: mingw-w64-cross-mingwarm64-gcc
-            cc: aarch64-w64-mingw32-gcc
-            cxx: aarch64-w64-mingw32-g++
-            path_prefix: /opt/bin
+            runner: windows-11-arm
+            msystem: CLANGARM64
+            packages: mingw-w64-clang-aarch64-gcc
+            cc: clang
+            cxx: clang++
+    runs-on: ${{ matrix.runner }}
     needs:
       - test
       - prepare-release
@@ -236,9 +244,6 @@ jobs:
           MSYS2_PATH_TYPE: inherit
         run: |
           set -euo pipefail
-          if [[ -n "${{ matrix.path_prefix }}" ]]; then
-            export PATH="${{ matrix.path_prefix }}:${PATH}"
-          fi
           if ! command -v go >/dev/null 2>&1; then
             if [[ -z "${GOROOT:-}" ]]; then
               echo "go is not on PATH and GOROOT is empty" >&2

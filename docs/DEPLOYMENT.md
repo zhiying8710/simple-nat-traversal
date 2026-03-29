@@ -38,9 +38,10 @@ go build ./...
 
 - `snt` / `snt-server` 仍然适合交叉编译。
 - 正式发布链路现在会产出：
-  - Windows `setup.exe`
-  - macOS `dmg`
-  - 多架构桌面包，覆盖常见 CPU 类型
+  - Windows `amd64` / `arm64` `setup.exe`
+  - macOS universal `dmg`
+  - 常用桌面架构的安装包
+- 本地 [scripts/build-release.ps1](/Users/zhiying8710/wk/simple-nat-traversal/scripts/build-release.ps1) 会按当前 Windows 主机架构生成对应安装包：x64 主机打 `amd64`，ARM 主机打 `arm64`。
 
 ## 3. 启动服务端
 
