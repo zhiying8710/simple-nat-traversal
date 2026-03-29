@@ -195,10 +195,14 @@ jobs:
             msystem: MINGW64
             packages: mingw-w64-x86_64-gcc
             cc: gcc
+            cxx: g++
+            path_prefix: ""
           - arch: arm64
-            msystem: CLANGARM64
-            packages: mingw-w64-clang-aarch64-gcc
-            cc: clang
+            msystem: MINGW64
+            packages: mingw-w64-cross-mingwarm64-gcc
+            cc: aarch64-w64-mingw32-gcc
+            cxx: aarch64-w64-mingw32-g++
+            path_prefix: /opt/bin
     needs:
       - test
       - prepare-release
@@ -232,6 +236,9 @@ jobs:
           MSYS2_PATH_TYPE: inherit
         run: |
           set -euo pipefail
+          if [[ -n "${{ matrix.path_prefix }}" ]]; then
+            export PATH="${{ matrix.path_prefix }}:${PATH}"
+          fi
           if ! command -v go >/dev/null 2>&1; then
             if [[ -z "${GOROOT:-}" ]]; then
               echo "go is not on PATH and GOROOT is empty" >&2
@@ -240,6 +247,8 @@ jobs:
             export PATH="$(cygpath -u "${GOROOT}")/bin:${PATH}"
           fi
           go version
+          "${{ matrix.cc }}" --version
+          "${{ matrix.cxx }}" --version
           VERSION="${RELEASE_TAG}"
           COMMIT="${GITHUB_SHA::7}"
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -252,6 +261,7 @@ jobs:
           export GOOS=windows
           export GOARCH=${{ matrix.arch }}
           export CC=${{ matrix.cc }}
+          export CXX=${{ matrix.cxx }}
 
           go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt.exe" ./cmd/snt
           go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt-gui.exe" ./cmd/snt-gui

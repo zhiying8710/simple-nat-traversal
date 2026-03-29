@@ -18,6 +18,55 @@ $HostGoarch = (go env GOARCH).Trim()
 
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
+function Add-ToPathIfExists {
+  param(
+    [string]$PathEntry
+  )
+
+  if ([string]::IsNullOrWhiteSpace($PathEntry) -or -not (Test-Path $PathEntry)) {
+    return
+  }
+  $separator = [System.IO.Path]::PathSeparator
+  $current = [string]$env:PATH
+  $entries = @()
+  if (-not [string]::IsNullOrWhiteSpace($current)) {
+    $entries = $current.Split($separator)
+  }
+  if ($entries -contains $PathEntry) {
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace($current)) {
+    $env:PATH = $PathEntry
+  } else {
+    $env:PATH = "$PathEntry$separator$current"
+  }
+}
+
+function Ensure-WindowsToolchainPath {
+  param(
+    [string]$Goarch
+  )
+
+  $roots = @()
+  if (-not [string]::IsNullOrWhiteSpace($env:SNT_MSYS2_ROOT)) {
+    $roots += $env:SNT_MSYS2_ROOT
+  }
+  $roots += "C:\msys64"
+  $roots += "C:\tools\msys64"
+
+  $suffixes = if ($Goarch -eq "arm64") {
+    @("opt\bin")
+  } else {
+    @("mingw64\bin")
+  }
+
+  foreach ($root in $roots) {
+    foreach ($suffix in $suffixes) {
+      Add-ToPathIfExists (Join-Path $root $suffix)
+    }
+  }
+}
+
 function Build-One {
   param(
     [string]$Goos,
@@ -62,12 +111,22 @@ function Build-WindowsGui {
   $cliOut = Join-Path $DistDir "snt-$Version-windows-$Goarch.exe"
   $installerOut = Join-Path $DistDir "client-windows-$Goarch-setup.exe"
 
+  Ensure-WindowsToolchainPath $Goarch
+
   $cc = if ($Goarch -eq "arm64") { $env:SNT_WINDOWS_CC_ARM64 } else { $env:SNT_WINDOWS_CC_AMD64 }
+  $cxx = if ($Goarch -eq "arm64") { $env:SNT_WINDOWS_CXX_ARM64 } else { $env:SNT_WINDOWS_CXX_AMD64 }
   if ([string]::IsNullOrWhiteSpace($cc)) {
-    $cc = if ($Goarch -eq "arm64") { "clang" } else { "gcc" }
+    $cc = if ($Goarch -eq "arm64") { "aarch64-w64-mingw32-gcc" } else { "gcc" }
+  }
+  if ([string]::IsNullOrWhiteSpace($cxx)) {
+    $cxx = if ($Goarch -eq "arm64") { "aarch64-w64-mingw32-g++" } else { "g++" }
   }
   if (-not (Get-Command $cc -ErrorAction SilentlyContinue)) {
     Write-Host "skipping Windows $Goarch GUI packaging: compiler '$cc' not found in PATH"
+    return
+  }
+  if (-not (Get-Command $cxx -ErrorAction SilentlyContinue)) {
+    Write-Host "skipping Windows $Goarch GUI packaging: compiler '$cxx' not found in PATH"
     return
   }
 
@@ -79,9 +138,11 @@ function Build-WindowsGui {
   Write-Host "building $guiOut"
   $env:CGO_ENABLED = "1"
   $env:CC = $cc
+  $env:CXX = $cxx
   go build -ldflags $LdFlags -o $guiOut ./cmd/snt-gui
   Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
   Remove-Item Env:CC -ErrorAction SilentlyContinue
+  Remove-Item Env:CXX -ErrorAction SilentlyContinue
 
   & (Join-Path $RootDir "scripts/package-windows-installer.ps1") `
     -Version $Version `
@@ -105,5 +166,6 @@ Remove-Item Env:GOOS -ErrorAction SilentlyContinue
 Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
 Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
 Remove-Item Env:CC -ErrorAction SilentlyContinue
+Remove-Item Env:CXX -ErrorAction SilentlyContinue
 
 Write-Host "release artifacts written to $DistDir"
