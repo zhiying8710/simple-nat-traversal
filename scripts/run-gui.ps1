@@ -1,5 +1,5 @@
 param(
-  [string]$ConfigPath = ".\client.json"
+  [string]$ConfigPath = ""
 )
 
 $RootDir = Split-Path -Parent $PSScriptRoot
@@ -14,4 +14,8 @@ if (Test-Path $sameDir) {
   throw "snt-gui.exe not found next to launcher or in parent directory"
 }
 
-& $GuiPath -config $ConfigPath
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+  & $GuiPath
+} else {
+  & $GuiPath -config $ConfigPath
+}

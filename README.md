@@ -1,11 +1,14 @@
 # simple-nat-traversal
 
-一个只做 `UDP P2P 打洞 + UDP 端口映射` 的最小工具。
+一个基于 `UDP P2P 打洞` 组网，并把远端 `UDP + TCP` 服务暴露给其他设备访问的最小工具。
 
 - 服务端只维护一个逻辑网络，校验一个配置里的密码，并分发在线设备的候选地址。
 - 客户端在同一个 UDP socket 上完成注册、打洞和后续业务数据传输。
 - 只要客户端配置里的密码和服务端一致，多台设备就能加入同一个多人 mesh 网络。
-- 不支持中继，不支持 TCP 转发，不做虚拟网卡。
+- UDP 服务直接走现有 P2P 数据面转发。
+- TCP 服务先通过 UDP 完成 NAT 打洞和 peer 会话建立，再在这条加密 P2P 通道里承载 TCP 字节流。
+- 重点覆盖 Windows RDP、SSH 这类 TCP 服务场景。
+- 不支持中继，不做虚拟网卡。
 
 ## 当前实现
 
@@ -17,14 +20,20 @@
 - P2P 会话使用该密码派生出的网络密钥做握手认证，再用临时 X25519 + AES-GCM 加密业务包。
 - 客户端首次保存配置或首次运行时会生成并持久化设备身份密钥，用于跨重启保持稳定设备身份。
 - 服务端会把 `device_name -> identity_public` 归属持久化到状态文件，默认写到与服务端配置同目录的 `*.state.json`，用于阻止离线设备名被其他身份接管。
-- 一个客户端可以发布多个本地 UDP 服务，也可以把多个远端 UDP 服务绑定到本地端口。
+- 一个客户端可以发布多个本地 UDP / TCP 服务，也可以把多个远端 UDP / TCP 服务绑定到本地端口。
+- TCP 数据面包含 `open` / `data` / `ack` / `close` 控制，按分片、确认、重传、按序重组的方式在 UDP P2P 通道上传输字节流。
 - 客户端在会话失效、被服务端踢掉或设备长时间未注册后，会自动重新入网并重建 P2P 会话。
 - `auto_connect=true` 时，GUI 窗口启动后会自动尝试拉起客户端并自动建联。
+- GUI 支持在没有现成 `client.json` 的情况下直接启动，首次保存时会写入系统用户配置目录。
+- GUI 内置结构化的服务管理界面，可以直接新增/修改 `publish`，并发现其他设备的已发布服务后一键 `bind`。
+- 当前 GUI 服务编辑页还没有 `udp/tcp` 协议选择器；TCP 服务配置建议先用 CLI、向导或直接改 JSON。
 
 ## 明确边界
 
 - 没有 relay。双方 NAT 太严格时，会失败。
+- TCP 能力依赖 UDP 打洞先成功；如果双方网络让 UDP 打洞失败，TCP 转发也不可用。
 - 这是 UDP overlay，不是系统级 LAN 模拟器。依赖广播/组播发现的程序不一定能直接用。
+- TCP 方案的目标优先是 RDP / SSH 这类交互式服务，不是通用高吞吐隧道。
 - 密码直接保存在客户端 JSON 配置里，配合 `-init-config` / `-edit-config` 维护。
 - 客户端可选开启本地只读管理端口，用来查看实时状态。
 - 建议网络密码至少 16 位。
@@ -49,8 +58,13 @@
 - `device_name` 在同一个网络里必须唯一，因为 `binds.*.peer` 通过名字找目标设备。
 - `admin_listen` 必须显式绑定到 `127.0.0.1`、`::1` 或 `localhost`。
 - `auto_connect=true` 适合 GUI + 开机启动场景。
-- `upsert-publish` 格式是 `name=host:port`。
-- `upsert-bind` 格式是 `name=peer,service,host:port`。
+- `publish.*.protocol` / `binds.*.protocol` 支持 `udp` 或 `tcp`；留空时默认按 `udp` 处理。
+- `upsert-publish` 支持：
+  - `name=host:port`
+  - `name=protocol,host:port`
+- `upsert-bind` 支持：
+  - `name=peer,service,host:port`
+  - `name=protocol,peer,service,host:port`
 - `install-autostart` 需要用正式构建出来的 `snt` 二进制执行，不能用 `go run`，否则登录项会指向临时文件。
 - `snt-gui` 的开机启动会把 GUI 自己设为登录项；如果 `auto_connect=true`，则登录后自动建联。
 
@@ -65,7 +79,9 @@ go build ./...
 说明：
 
 - `cmd/snt` 和 `cmd/snt-server` 仍然适合交叉编译。
-- `cmd/snt-gui` 现在基于 Fyne，正式发布建议在目标桌面系统上原生构建；发布脚本会只在宿主平台与目标平台一致时构建 GUI。
+- 正式发布会产出：
+  - Windows 多架构安装器 `setup.exe`
+  - macOS 多架构 `dmg`
 
 初始化客户端配置：
 
@@ -89,10 +105,20 @@ go run ./cmd/snt -config ./client.json -set-admin-password-env SNT_ADMIN_PASSWOR
 go run ./cmd/snt -config ./client.json -set-allow-insecure-http true
 go run ./cmd/snt -config ./client.json -set-auto-connect true
 go run ./cmd/snt -config ./client.json -upsert-publish game=127.0.0.1:19132
+go run ./cmd/snt -config ./client.json -upsert-publish rdp=tcp,127.0.0.1:3389
+go run ./cmd/snt -config ./client.json -upsert-publish ssh=tcp,127.0.0.1:22
 go run ./cmd/snt -config ./client.json -upsert-bind win-game=winpc,game,127.0.0.1:29132
+go run ./cmd/snt -config ./client.json -upsert-bind win-rdp=tcp,winpc,rdp,127.0.0.1:13389
+go run ./cmd/snt -config ./client.json -upsert-bind server-ssh=tcp,server,ssh,127.0.0.1:10022
 go run ./cmd/snt -config ./client.json -delete-publish game
 go run ./cmd/snt -config ./client.json -delete-bind win-game
 ```
+
+一个典型的 TCP 场景：
+
+- Windows 机器发布 `rdp=tcp,127.0.0.1:3389`
+- 另一台机器绑定 `win-rdp=tcp,winpc,rdp,127.0.0.1:13389`
+- 然后直接连本地 `127.0.0.1:13389`，流量会经 UDP P2P 通道转到远端 Windows 的 `3389`
 
 也可以从文件读取密码，避免把秘密写到命令行参数里：
 
@@ -154,8 +180,7 @@ go run ./cmd/snt -config ./examples/client-windows.json
 启动 GUI：
 
 ```bash
-go run ./cmd/snt-gui -config ./examples/client-macos.json
-go run ./cmd/snt-gui -config ./examples/client-windows.json
+go run ./cmd/snt-gui
 ```
 
 查看版本：
@@ -216,6 +241,7 @@ go run ./cmd/snt -config ./examples/client-macos.json -kick-device-id dev_xxx
 - 可直接管理开机启动
 - 不再暴露本地浏览器控制面，而是直接提供原生桌面窗口
 - GUI 的 `password` / `admin_password` 输入框默认不会回显已保存值；留空表示保持原值，勾选对应清空框才会删除已保存密码
+- 当前新增或编辑 TCP `publish` / `bind` 时，推荐先用 CLI / 向导 / JSON；GUI 服务编辑页后续再补协议选择
 
 GUI 相关文档：
 
@@ -229,8 +255,10 @@ GUI 相关文档：
 2. 客户端通过 UDP 向服务器注册自己的候选地址和已发布服务。
 3. 服务器把当前网络内在线成员同步给所有客户端。
 4. 客户端两两发送 `punch_hello`，收到对端有效握手包后建立加密 P2P 会话。
-5. 本地应用把 UDP 包发给 `bind` 监听端口，客户端会把它加密后直接发给远端 peer。
-6. 远端 peer 把包转给本地 `publish` 的 UDP 服务，并把响应包再经 P2P 会话送回来。
+5. UDP 场景下，本地应用把 UDP 包发给 `bind` 监听端口，客户端会把它加密后直接发给远端 peer。
+6. 远端 peer 把 UDP 包转给本地 `publish` 的 UDP 服务，并把响应包再经 P2P 会话送回来。
+7. TCP 场景下，本地应用连接 `bind` 的 TCP 监听端口，客户端会先发送 `tcp_open`，随后把 TCP 字节流切成分片，经加密 P2P 通道发送给远端 peer。
+8. 远端 peer 把这些分片按序写入本地 TCP `publish` 服务，并通过 `tcp_ack` / 重传机制维持可靠传输，直到任一侧关闭连接。
 
 ## 发布与脚本
 

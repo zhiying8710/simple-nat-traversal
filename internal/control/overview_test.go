@@ -44,6 +44,7 @@ func TestRenderOverview(t *testing.T) {
 		DeviceName:  "mac-a",
 		UDPListen:   ":0",
 		AdminListen: "127.0.0.1:19090",
+		LogLevel:    config.LogLevelInfo,
 		Publish: map[string]config.PublishConfig{
 			"echo": {Local: "127.0.0.1:19132"},
 		},
@@ -83,6 +84,7 @@ func TestRenderOverview(t *testing.T) {
 		"client_running\tyes",
 		"autostart_installed\tyes",
 		"device_name\tmac-a",
+		"log_level\tinfo",
 		"publish_count\t1",
 		"bind_count\t1",
 		"network_state\tjoined",

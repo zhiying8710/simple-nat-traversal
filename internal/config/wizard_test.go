@@ -69,10 +69,12 @@ func TestInitClientConfigInteractive(t *testing.T) {
 		"127.0.0.1:19091",
 		"y",
 		"echo",
+		"",
 		"127.0.0.1:19132",
 		"",
 		"y",
 		"echo-a",
+		"",
 		"mac-a",
 		"echo",
 		"127.0.0.1:29132",
@@ -100,8 +102,14 @@ func TestInitClientConfigInteractive(t *testing.T) {
 	if cfg.Publish["echo"].Local != "127.0.0.1:19132" {
 		t.Fatalf("unexpected generated publish config: %+v", cfg.Publish)
 	}
+	if cfg.Publish["echo"].Protocol != ServiceProtocolUDP {
+		t.Fatalf("expected generated publish protocol to default to udp: %+v", cfg.Publish)
+	}
 	if cfg.Binds["echo-a"].Peer != "mac-a" {
 		t.Fatalf("unexpected generated bind config: %+v", cfg.Binds)
+	}
+	if cfg.Binds["echo-a"].Protocol != ServiceProtocolUDP {
+		t.Fatalf("expected generated bind protocol to default to udp: %+v", cfg.Binds)
 	}
 	if !strings.Contains(output.String(), "saved") {
 		t.Fatalf("wizard output missing save confirmation: %q", output.String())

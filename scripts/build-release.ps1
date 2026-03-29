@@ -53,13 +53,57 @@ function Build-GuiIfNativeHost {
   Build-One $Goos $Goarch $Package $Name
 }
 
+function Build-WindowsGui {
+  param(
+    [string]$Goarch
+  )
+
+  $guiOut = Join-Path $DistDir "snt-gui-$Version-windows-$Goarch.exe"
+  $cliOut = Join-Path $DistDir "snt-$Version-windows-$Goarch.exe"
+  $installerOut = Join-Path $DistDir "client-windows-$Goarch-setup.exe"
+
+  $cc = if ($Goarch -eq "arm64") { $env:SNT_WINDOWS_CC_ARM64 } else { $env:SNT_WINDOWS_CC_AMD64 }
+  if ([string]::IsNullOrWhiteSpace($cc)) {
+    $cc = if ($Goarch -eq "arm64") { "clang" } else { "gcc" }
+  }
+  if (-not (Get-Command $cc -ErrorAction SilentlyContinue)) {
+    Write-Host "skipping Windows $Goarch GUI packaging: compiler '$cc' not found in PATH"
+    return
+  }
+
+  Write-Host "building $cliOut"
+  $env:GOOS = "windows"
+  $env:GOARCH = $Goarch
+  go build -ldflags $LdFlags -o $cliOut ./cmd/snt
+
+  Write-Host "building $guiOut"
+  $env:CGO_ENABLED = "1"
+  $env:CC = $cc
+  go build -ldflags $LdFlags -o $guiOut ./cmd/snt-gui
+  Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
+  Remove-Item Env:CC -ErrorAction SilentlyContinue
+
+  & (Join-Path $RootDir "scripts/package-windows-installer.ps1") `
+    -Version $Version `
+    -Arch $Goarch `
+    -GuiBinary $guiOut `
+    -CliBinary $cliOut `
+    -OutputFile $installerOut
+}
+
 Build-One linux amd64 ./cmd/snt-server snt-server
-Build-One darwin arm64 ./cmd/snt snt
-Build-One windows amd64 ./cmd/snt snt
-Build-GuiIfNativeHost darwin arm64 ./cmd/snt-gui snt-gui
-Build-GuiIfNativeHost windows amd64 ./cmd/snt-gui snt-gui
+Build-One linux amd64 ./cmd/snt snt
+
+if ($HostGoos -eq "windows") {
+  Build-WindowsGui amd64
+  Build-WindowsGui arm64
+} else {
+  Write-Host "skipping Windows installer packaging: run this script on a Windows host with MinGW/Clang and Inno Setup installed"
+}
 
 Remove-Item Env:GOOS -ErrorAction SilentlyContinue
 Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
+Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
+Remove-Item Env:CC -ErrorAction SilentlyContinue
 
 Write-Host "release artifacts written to $DistDir"

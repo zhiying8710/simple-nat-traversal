@@ -121,11 +121,23 @@ func promptPublishEntries(reader *bufio.Reader, out io.Writer) (map[string]Publi
 		if name == "" {
 			break
 		}
-		local, err := promptString(reader, out, "  local udp addr", "127.0.0.1:19132")
+		protocol, err := promptString(reader, out, "  protocol (udp/tcp)", ServiceProtocolUDP)
 		if err != nil {
 			return nil, err
 		}
-		entries[name] = PublishConfig{Local: local}
+		protocol, err = NormalizeServiceProtocol(protocol)
+		if err != nil {
+			return nil, err
+		}
+		defaultLocal := "127.0.0.1:19132"
+		if protocol == ServiceProtocolTCP {
+			defaultLocal = "127.0.0.1:3389"
+		}
+		local, err := promptString(reader, out, "  local service addr", defaultLocal)
+		if err != nil {
+			return nil, err
+		}
+		entries[name] = PublishConfig{Protocol: protocol, Local: local}
 	}
 	return entries, nil
 }
@@ -141,6 +153,14 @@ func promptBindEntries(reader *bufio.Reader, out io.Writer) (map[string]BindConf
 		if name == "" {
 			break
 		}
+		protocol, err := promptString(reader, out, "  protocol (udp/tcp)", ServiceProtocolUDP)
+		if err != nil {
+			return nil, err
+		}
+		protocol, err = NormalizeServiceProtocol(protocol)
+		if err != nil {
+			return nil, err
+		}
 		peer, err := promptString(reader, out, "  peer device_name", "")
 		if err != nil {
 			return nil, err
@@ -149,14 +169,19 @@ func promptBindEntries(reader *bufio.Reader, out io.Writer) (map[string]BindConf
 		if err != nil {
 			return nil, err
 		}
-		local, err := promptString(reader, out, "  local listen udp addr", "127.0.0.1:29132")
+		defaultLocal := "127.0.0.1:29132"
+		if protocol == ServiceProtocolTCP {
+			defaultLocal = "127.0.0.1:13389"
+		}
+		local, err := promptString(reader, out, "  local listen addr", defaultLocal)
 		if err != nil {
 			return nil, err
 		}
 		entries[name] = BindConfig{
-			Peer:    peer,
-			Service: service,
-			Local:   local,
+			Protocol: protocol,
+			Peer:     peer,
+			Service:  service,
+			Local:    local,
 		}
 	}
 	return entries, nil

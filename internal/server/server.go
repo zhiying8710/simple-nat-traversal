@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"slices"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"simple-nat-traversal/internal/config"
+	"simple-nat-traversal/internal/logx"
 	"simple-nat-traversal/internal/proto"
 	"simple-nat-traversal/internal/secure"
 )
@@ -77,6 +77,9 @@ func New(cfg config.ServerConfig) (*Server, error) {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	if _, err := logx.SetLevel(s.cfg.LogLevel); err != nil {
+		return err
+	}
 	udpAddr, err := net.ResolveUDPAddr("udp", s.cfg.UDPListen)
 	if err != nil {
 		return fmt.Errorf("resolve udp listen addr: %w", err)
@@ -94,6 +97,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/v1/network/leave", s.handleLeaveNetwork)
 	mux.HandleFunc("/v1/network/devices", s.handleListDevices)
 	mux.HandleFunc("/v1/network/devices/kick", s.handleKickDevice)
+	mux.HandleFunc("/v1/admin/log-level", s.handleLogLevel)
 
 	httpServer := &http.Server{
 		Addr:              s.cfg.HTTPListen,
@@ -128,7 +132,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	log.Printf("server listening: http=%s udp=%s public_udp=%s mode=single-network", s.cfg.HTTPListen, s.cfg.UDPListen, s.cfg.PublicUDPAddr)
+	logx.Infof("server listening: http=%s udp=%s public_udp=%s mode=single-network", s.cfg.HTTPListen, s.cfg.UDPListen, s.cfg.PublicUDPAddr)
 
 	select {
 	case err := <-errCh:
@@ -173,7 +177,7 @@ func (s *Server) serveUDP(ctx context.Context) error {
 		default:
 			if time.Since(lastDropLog) >= 5*time.Second {
 				lastDropLog = time.Now()
-				log.Printf("udp receive queue full; dropping packet from %s", addr)
+				logx.Warnf("udp receive queue full; dropping packet from %s", addr)
 			}
 		}
 	}
@@ -337,7 +341,7 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", "")
 		return
 	}
-	if strings.TrimSpace(s.cfg.AdminPassword) == "" {
+	if !s.adminEnabled() {
 		s.writeAPIError(w, http.StatusForbidden, "admin_disabled", "server admin is disabled", "")
 		return
 	}
@@ -356,7 +360,7 @@ func (s *Server) handleKickDevice(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", "")
 		return
 	}
-	if strings.TrimSpace(s.cfg.AdminPassword) == "" {
+	if !s.adminEnabled() {
 		s.writeAPIError(w, http.StatusForbidden, "admin_disabled", "server admin is disabled", "")
 		return
 	}
@@ -392,10 +396,54 @@ func (s *Server) handleKickDevice(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleLogLevel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		s.writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", "")
+		return
+	}
+	if !s.authorizeLogLevel(r) {
+		s.writeAPIError(w, http.StatusUnauthorized, "unauthorized", "unauthorized", "")
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		if err := s.writeJSON(w, http.StatusOK, proto.LogLevelResponse{LogLevel: logx.CurrentLevel()}); err != nil {
+			s.writeAPIError(w, http.StatusInternalServerError, "encode_failed", "encode response failed", err.Error())
+		}
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		s.writeAPIError(w, http.StatusBadRequest, "read_failed", "read request body failed", err.Error())
+		return
+	}
+	defer r.Body.Close()
+
+	var req proto.LogLevelUpdateRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeAPIError(w, http.StatusBadRequest, "invalid_json", "invalid json body", err.Error())
+		return
+	}
+	level, err := logx.SetLevel(req.LogLevel)
+	if err != nil {
+		s.writeAPIError(w, http.StatusBadRequest, "invalid_log_level", err.Error(), "")
+		return
+	}
+
+	s.mu.Lock()
+	s.cfg.LogLevel = level
+	s.mu.Unlock()
+
+	if err := s.writeJSON(w, http.StatusOK, proto.LogLevelResponse{LogLevel: level}); err != nil {
+		s.writeAPIError(w, http.StatusInternalServerError, "encode_failed", "encode response failed", err.Error())
+	}
+}
+
 func (s *Server) handleDatagram(addr *net.UDPAddr, raw []byte) {
 	env, err := proto.UnmarshalEnvelope(raw)
 	if err != nil {
-		log.Printf("udp invalid envelope from %s: %v", addr, err)
+		logx.Debugf("udp invalid envelope from %s: %v", addr, err)
 		return
 	}
 
@@ -481,7 +529,7 @@ func (s *Server) broadcastPeerSync(targets []peerSyncTarget) {
 	for _, target := range targets {
 		addr, err := net.ResolveUDPAddr("udp", target.addr)
 		if err != nil {
-			log.Printf("resolve peer target %q failed: %v", target.addr, err)
+			logx.Warnf("resolve peer target %q failed: %v", target.addr, err)
 			continue
 		}
 		s.sendEnvelope(addr, target.env)
@@ -500,11 +548,11 @@ func (s *Server) sendError(addr *net.UDPAddr, message string) {
 func (s *Server) sendEnvelope(addr *net.UDPAddr, env proto.Envelope) {
 	raw, err := proto.MarshalEnvelope(env)
 	if err != nil {
-		log.Printf("marshal envelope failed: %v", err)
+		logx.Errorf("marshal envelope failed: %v", err)
 		return
 	}
 	if _, err := s.udpConn.WriteToUDP(raw, addr); err != nil {
-		log.Printf("udp send to %s failed: %v", addr, err)
+		logx.Warnf("udp send to %s failed: %v", addr, err)
 	}
 }
 
@@ -598,13 +646,14 @@ func (s *Server) snapshotDevices() proto.NetworkDevicesResponse {
 			lastSeen = device.LastSeen
 		}
 		devices = append(devices, proto.NetworkDeviceStatus{
-			DeviceID:     device.ID,
-			DeviceName:   device.Name,
-			State:        state,
-			ObservedAddr: device.ObservedAddr,
-			Candidates:   slices.Clone(device.Candidates),
-			Services:     serviceNames(device.Services),
-			LastSeen:     lastSeen,
+			DeviceID:       device.ID,
+			DeviceName:     device.Name,
+			State:          state,
+			ObservedAddr:   device.ObservedAddr,
+			Candidates:     slices.Clone(device.Candidates),
+			Services:       serviceNames(device.Services),
+			ServiceDetails: slices.Clone(device.Services),
+			LastSeen:       lastSeen,
 		})
 	}
 	slices.SortFunc(devices, func(a, b proto.NetworkDeviceStatus) int {
@@ -632,6 +681,24 @@ func (s *Server) authorizeAdmin(r *http.Request) bool {
 		}
 	}
 	return subtle.ConstantTimeCompare([]byte(password), []byte(s.cfg.AdminPassword)) == 1
+}
+
+func (s *Server) adminEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return strings.TrimSpace(s.cfg.AdminPassword) != ""
+}
+
+func (s *Server) authorizeLogLevel(r *http.Request) bool {
+	if s.adminEnabled() {
+		return s.authorizeAdmin(r)
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) matchesServerPassword(password string) bool {

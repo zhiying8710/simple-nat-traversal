@@ -1,6 +1,7 @@
 package simple_nat_traversal_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -118,11 +119,17 @@ func TestUDPPortMappingEndToEnd(t *testing.T) {
 	if len(status.Peers) == 0 || status.Peers[0].State != "connected" {
 		t.Fatalf("unexpected peer status: %+v", status.Peers)
 	}
+	if len(status.Binds) != 1 || status.Binds[0].Name != "echo-b" || status.Binds[0].ListenAddr != bindAddr {
+		t.Fatalf("expected bind listener to be applied from config, got: %+v", status.Binds)
+	}
 	oldPeerID := status.Peers[0].DeviceID
 
 	statusB, err := client.FetchStatus(ctx, config.ClientConfig{AdminListen: adminB})
 	if err != nil {
 		t.Fatalf("fetch final status for win-b: %v", err)
+	}
+	if len(statusB.Publish) != 1 || statusB.Publish[0].Name != "echo" || statusB.Publish[0].Local != echoAddr {
+		t.Fatalf("expected publish service to be applied from config, got: %+v", statusB.Publish)
 	}
 	oldSelfID := statusB.DeviceID
 
@@ -183,6 +190,140 @@ func TestUDPPortMappingEndToEnd(t *testing.T) {
 	}
 	if got := string(buf[:n]); got != string(payload) {
 		t.Fatalf("unexpected echo payload after rejoin: got=%q want=%q", got, payload)
+	}
+
+	cancel()
+	assertContextExit(t, <-serverErrCh)
+	assertContextExit(t, <-clientErrCh)
+	assertContextExit(t, <-clientErrCh)
+}
+
+func TestTCPPortForwardEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	httpAddr := reserveTCPAddr(t)
+	udpAddr := reserveUDPAddr(t)
+	adminA := reserveTCPAddr(t)
+	adminB := reserveTCPAddr(t)
+	echoAddr := reserveTCPAddr(t)
+	bindAddr := reserveTCPAddr(t)
+
+	srv, err := server.New(config.ServerConfig{
+		HTTPListen:    httpAddr,
+		UDPListen:     udpAddr,
+		PublicUDPAddr: udpAddr,
+		Password:      "tcp-forward-password-1234",
+		AdminPassword: "tcp-forward-admin-password-1234",
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		serverErrCh <- srv.Run(ctx)
+	}()
+	waitForHTTPHealth(t, ctx, "http://"+httpAddr+"/healthz")
+
+	echoLn, err := net.Listen("tcp", echoAddr)
+	if err != nil {
+		t.Fatalf("listen tcp echo server: %v", err)
+	}
+	defer echoLn.Close()
+	go runTCPEchoServer(echoLn)
+
+	clientErrCh := make(chan error, 2)
+	go func() {
+		clientErrCh <- client.Run(ctx, config.ClientConfig{
+			ServerURL:     "http://" + httpAddr,
+			Password:      "tcp-forward-password-1234",
+			AdminPassword: "tcp-forward-admin-password-1234",
+			DeviceName:    "win-b",
+			UDPListen:     "127.0.0.1:0",
+			AdminListen:   adminB,
+			Publish: map[string]config.PublishConfig{
+				"echo-tcp": {
+					Protocol: config.ServiceProtocolTCP,
+					Local:    echoAddr,
+				},
+			},
+			Binds: map[string]config.BindConfig{},
+		})
+	}()
+	go func() {
+		clientErrCh <- client.Run(ctx, config.ClientConfig{
+			ServerURL:     "http://" + httpAddr,
+			Password:      "tcp-forward-password-1234",
+			AdminPassword: "tcp-forward-admin-password-1234",
+			DeviceName:    "mac-a",
+			UDPListen:     "127.0.0.1:0",
+			AdminListen:   adminA,
+			Publish:       map[string]config.PublishConfig{},
+			Binds: map[string]config.BindConfig{
+				"echo-b": {
+					Protocol: config.ServiceProtocolTCP,
+					Peer:     "win-b",
+					Service:  "echo-tcp",
+					Local:    bindAddr,
+				},
+			},
+		})
+	}()
+
+	waitForPeerConnected(t, ctx, config.ClientConfig{AdminListen: adminA}, "win-b")
+
+	status, err := client.FetchStatus(ctx, config.ClientConfig{AdminListen: adminA})
+	if err != nil {
+		t.Fatalf("fetch tcp bind status: %v", err)
+	}
+	if len(status.Peers) == 0 || len(status.Peers[0].ServiceDetails) == 0 || status.Peers[0].ServiceDetails[0].Protocol != config.ServiceProtocolTCP {
+		t.Fatalf("expected discovered tcp publish in peer status, got: %+v", status.Peers)
+	}
+	if len(status.Binds) != 1 || status.Binds[0].Name != "echo-b" || status.Binds[0].Protocol != config.ServiceProtocolTCP || status.Binds[0].ListenAddr != bindAddr {
+		t.Fatalf("expected tcp bind listener to be applied from config, got: %+v", status.Binds)
+	}
+	statusB, err := client.FetchStatus(ctx, config.ClientConfig{AdminListen: adminB})
+	if err != nil {
+		t.Fatalf("fetch tcp publish status: %v", err)
+	}
+	if len(statusB.Publish) != 1 || statusB.Publish[0].Name != "echo-tcp" || statusB.Publish[0].Protocol != config.ServiceProtocolTCP || statusB.Publish[0].Local != echoAddr {
+		t.Fatalf("expected tcp publish to be applied from config, got: %+v", statusB.Publish)
+	}
+
+	conn, err := net.Dial("tcp", bindAddr)
+	if err != nil {
+		t.Fatalf("dial local tcp bind: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set tcp deadline: %v", err)
+	}
+
+	payload := bytes.Repeat([]byte("tcp-over-udp-forward-"), 160)
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write first tcp payload: %v", err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read first tcp payload: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("unexpected first tcp echo payload")
+	}
+
+	payload2 := []byte("second-round-trip-over-same-stream")
+	if _, err := conn.Write(payload2); err != nil {
+		t.Fatalf("write second tcp payload: %v", err)
+	}
+	got2 := make([]byte, len(payload2))
+	if _, err := io.ReadFull(conn, got2); err != nil {
+		t.Fatalf("read second tcp payload: %v", err)
+	}
+	if !bytes.Equal(got2, payload2) {
+		t.Fatalf("unexpected second tcp echo payload")
 	}
 
 	cancel()
@@ -518,6 +659,19 @@ func runEchoServer(conn *net.UDPConn) {
 			return
 		}
 		_, _ = conn.WriteToUDP(buf[:n], addr)
+	}
+}
+
+func runTCPEchoServer(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func(conn net.Conn) {
+			defer conn.Close()
+			_, _ = io.Copy(conn, conn)
+		}(conn)
 	}
 }
 

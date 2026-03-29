@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"simple-nat-traversal/internal/config"
+	"simple-nat-traversal/internal/logx"
+	"simple-nat-traversal/internal/proto"
 )
 
 type StatusSnapshot struct {
@@ -26,6 +28,7 @@ type StatusSnapshot struct {
 	ObservedAddr              string          `json:"observed_addr,omitempty"`
 	ServerUDPAddr             string          `json:"server_udp_addr,omitempty"`
 	AdminAddr                 string          `json:"admin_addr,omitempty"`
+	LogLevel                  string          `json:"log_level"`
 	HeartbeatSeconds          int             `json:"heartbeat_seconds"`
 	PunchIntervalMS           int             `json:"punch_interval_ms"`
 	LastRegisterAt            time.Time       `json:"last_register_at,omitempty"`
@@ -44,12 +47,14 @@ type StatusSnapshot struct {
 }
 
 type PublishStatus struct {
-	Name  string `json:"name"`
-	Local string `json:"local"`
+	Name     string `json:"name"`
+	Protocol string `json:"protocol"`
+	Local    string `json:"local"`
 }
 
 type BindStatus struct {
 	Name           string `json:"name"`
+	Protocol       string `json:"protocol"`
 	ListenAddr     string `json:"listen_addr"`
 	Peer           string `json:"peer"`
 	Service        string `json:"service"`
@@ -57,26 +62,27 @@ type BindStatus struct {
 }
 
 type PeerStatus struct {
-	DeviceID             string            `json:"device_id"`
-	DeviceName           string            `json:"device_name"`
-	State                string            `json:"state"`
-	ObservedAddr         string            `json:"observed_addr,omitempty"`
-	ChosenAddr           string            `json:"chosen_addr,omitempty"`
-	Candidates           []string          `json:"candidates,omitempty"`
-	Services             []string          `json:"services,omitempty"`
-	LastSeen             time.Time         `json:"last_seen,omitempty"`
-	SessionEstablishedAt time.Time         `json:"session_established_at,omitempty"`
-	SessionLastSeen      time.Time         `json:"session_last_seen,omitempty"`
-	PunchAttempts        uint64            `json:"punch_attempts"`
-	SentPackets          uint64            `json:"sent_packets"`
-	RecvPackets          uint64            `json:"recv_packets"`
-	SentBytes            uint64            `json:"sent_bytes"`
-	RecvBytes            uint64            `json:"recv_bytes"`
-	LastError            string            `json:"last_error,omitempty"`
-	RouteReason          string            `json:"route_reason,omitempty"`
-	RouteChangedAt       time.Time         `json:"route_changed_at,omitempty"`
-	LastOfflineReason    string            `json:"last_offline_reason,omitempty"`
-	CandidateStats       []CandidateStatus `json:"candidate_stats,omitempty"`
+	DeviceID             string              `json:"device_id"`
+	DeviceName           string              `json:"device_name"`
+	State                string              `json:"state"`
+	ObservedAddr         string              `json:"observed_addr,omitempty"`
+	ChosenAddr           string              `json:"chosen_addr,omitempty"`
+	Candidates           []string            `json:"candidates,omitempty"`
+	Services             []string            `json:"services,omitempty"`
+	ServiceDetails       []proto.ServiceInfo `json:"service_details,omitempty"`
+	LastSeen             time.Time           `json:"last_seen,omitempty"`
+	SessionEstablishedAt time.Time           `json:"session_established_at,omitempty"`
+	SessionLastSeen      time.Time           `json:"session_last_seen,omitempty"`
+	PunchAttempts        uint64              `json:"punch_attempts"`
+	SentPackets          uint64              `json:"sent_packets"`
+	RecvPackets          uint64              `json:"recv_packets"`
+	SentBytes            uint64              `json:"sent_bytes"`
+	RecvBytes            uint64              `json:"recv_bytes"`
+	LastError            string              `json:"last_error,omitempty"`
+	RouteReason          string              `json:"route_reason,omitempty"`
+	RouteChangedAt       time.Time           `json:"route_changed_at,omitempty"`
+	LastOfflineReason    string              `json:"last_offline_reason,omitempty"`
+	CandidateStats       []CandidateStatus   `json:"candidate_stats,omitempty"`
 }
 
 type CandidateStatus struct {
@@ -149,6 +155,7 @@ func (c *Client) startAdminServer() error {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/status", c.handleStatus)
+	mux.HandleFunc("/log-level", c.handleLogLevel)
 
 	srv := &http.Server{
 		Handler: mux,
@@ -158,7 +165,7 @@ func (c *Client) startAdminServer() error {
 
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("admin http server exited: %v", err)
+			logx.Warnf("admin http server exited: %v", err)
 		}
 	}()
 	return nil
@@ -176,6 +183,45 @@ func (c *Client) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (c *Client) handleLogLevel(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		c.writeLogLevelResponse(w, logx.CurrentLevel())
+	case http.MethodPost:
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "read request body failed", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		var req proto.LogLevelUpdateRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "invalid json body", http.StatusBadRequest)
+			return
+		}
+		level, err := logx.SetLevel(req.LogLevel)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		c.mu.Lock()
+		c.cfg.LogLevel = level
+		c.mu.Unlock()
+		c.writeLogLevelResponse(w, level)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (c *Client) writeLogLevelResponse(w http.ResponseWriter, level string) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(proto.LogLevelResponse{LogLevel: level}); err != nil {
+		http.Error(w, "encode log level failed", http.StatusInternalServerError)
+	}
+}
+
 func (c *Client) snapshotStatus() StatusSnapshot {
 	session := c.networkSnapshot()
 	snapshot := StatusSnapshot{
@@ -184,6 +230,7 @@ func (c *Client) snapshotStatus() StatusSnapshot {
 		DeviceID:         session.deviceID,
 		DeviceName:       c.cfg.DeviceName,
 		AdminAddr:        c.adminAddr,
+		LogLevel:         logx.CurrentLevel(),
 		HeartbeatSeconds: int(session.heartbeat / time.Second),
 		PunchIntervalMS:  int(session.punchInterval / time.Millisecond),
 	}
@@ -212,18 +259,21 @@ func (c *Client) snapshotStatus() StatusSnapshot {
 
 	for name, publish := range c.cfg.Publish {
 		snapshot.Publish = append(snapshot.Publish, PublishStatus{
-			Name:  name,
-			Local: publish.Local,
+			Name:     name,
+			Protocol: publish.Protocol,
+			Local:    publish.Local,
 		})
 	}
 	for name, bind := range c.binds {
 		bind.mu.Lock()
-		activeSessions := len(bind.sessions)
+		activeSessions := bind.activeSessionCountLocked()
+		listenAddr := bind.listenAddrLocked()
 		bind.mu.Unlock()
 
 		snapshot.Binds = append(snapshot.Binds, BindStatus{
 			Name:           name,
-			ListenAddr:     bind.conn.LocalAddr().String(),
+			Protocol:       bind.cfg.Protocol,
+			ListenAddr:     listenAddr,
 			Peer:           bind.cfg.Peer,
 			Service:        bind.cfg.Service,
 			ActiveSessions: activeSessions,
@@ -239,6 +289,7 @@ func (c *Client) snapshotStatus() StatusSnapshot {
 			ChosenAddr:        udpAddrString(peer.chosenAddr),
 			Candidates:        udpAddrsToStrings(peer.candidates),
 			Services:          serviceNames(peer.info.Services),
+			ServiceDetails:    slices.Clone(peer.info.Services),
 			LastSeen:          peer.lastSeen,
 			PunchAttempts:     peer.punchAttempts,
 			LastError:         peer.lastError,
@@ -270,16 +321,20 @@ func (c *Client) snapshotStatus() StatusSnapshot {
 	return snapshot
 }
 
-func statusURLFromListen(addr string) (string, error) {
+func adminURLFromListen(addr, path string) (string, error) {
 	if err := config.ValidateAdminListen(addr); err != nil {
 		return "", err
 	}
 	u := url.URL{
 		Scheme: "http",
 		Host:   addr,
-		Path:   "/status",
+		Path:   path,
 	}
 	return u.String(), nil
+}
+
+func statusURLFromListen(addr string) (string, error) {
+	return adminURLFromListen(addr, "/status")
 }
 
 func peerStateLabel(peer *peerState) string {

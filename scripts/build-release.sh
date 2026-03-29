@@ -44,10 +44,50 @@ build_gui_if_native_host() {
   build_one "${goos}" "${goarch}" "${pkg}" "${name}"
 }
 
+build_macos_gui() {
+  local goarch="$1"
+  local cli_out="${DIST_DIR}/snt-${VERSION}-darwin-${goarch}"
+  local gui_out="${DIST_DIR}/snt-gui-${VERSION}-darwin-${goarch}"
+  local dmg_out="${DIST_DIR}/client-macos-${goarch}.dmg"
+
+  echo "building ${cli_out}"
+  GOOS=darwin GOARCH="${goarch}" go build -ldflags "${LDFLAGS}" -o "${cli_out}" ./cmd/snt
+
+  echo "building ${gui_out}"
+  if [[ "${goarch}" == "amd64" ]]; then
+    local sdkroot
+    sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
+    env \
+      SDKROOT="${sdkroot}" \
+      CGO_ENABLED=1 \
+      GOOS=darwin \
+      GOARCH=amd64 \
+      CC="clang -arch x86_64" \
+      CXX="clang++ -arch x86_64" \
+      CGO_CFLAGS="-arch x86_64" \
+      CGO_CXXFLAGS="-arch x86_64" \
+      CGO_LDFLAGS="-arch x86_64" \
+      go build -ldflags "${LDFLAGS}" -o "${gui_out}" ./cmd/snt-gui
+  else
+    env CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${gui_out}" ./cmd/snt-gui
+  fi
+
+  chmod +x "${ROOT_DIR}/scripts/package-macos.sh"
+  "${ROOT_DIR}/scripts/package-macos.sh" "${VERSION}" "${goarch}" "${gui_out}" "${cli_out}" "${dmg_out}"
+}
+
 build_one linux amd64 ./cmd/snt-server snt-server
-build_one darwin arm64 ./cmd/snt snt
-build_one windows amd64 ./cmd/snt snt
-build_gui_if_native_host darwin arm64 ./cmd/snt-gui snt-gui
-build_gui_if_native_host windows amd64 ./cmd/snt-gui snt-gui
+build_one linux amd64 ./cmd/snt snt
+
+if [[ "${HOST_GOOS}" == "darwin" ]]; then
+  build_macos_gui arm64
+  build_macos_gui amd64
+else
+  echo "skipping macOS DMG packaging: run this script on macOS to build desktop packages"
+fi
+
+if [[ "${HOST_GOOS}" == "windows" ]]; then
+  echo "windows installer packaging is handled by scripts/build-release.ps1 on a Windows host"
+fi
 
 echo "release artifacts written to ${DIST_DIR}"

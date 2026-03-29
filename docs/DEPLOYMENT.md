@@ -37,7 +37,10 @@ go build ./...
 说明：
 
 - `snt` / `snt-server` 仍然适合交叉编译。
-- `snt-gui` 现在基于 Fyne，建议在目标桌面系统上原生构建；发布脚本会跳过不匹配宿主平台的 GUI 目标。
+- 正式发布链路现在会产出：
+  - Windows `setup.exe`
+  - macOS `dmg`
+  - 多架构桌面包，覆盖常见 CPU 类型
 
 ## 3. 启动服务端
 
@@ -53,7 +56,7 @@ go build ./...
 
 ## 4. 客户端准备
 
-先准备 `client.json`：
+CLI 使用时可以先准备 `client.json`：
 
 ```json
 {
@@ -73,6 +76,8 @@ go build ./...
 
 - `admin_password` 只用于查看在线设备和踢设备；如果某台客户端不需要这些管理能力，可以留空
 - 客户端会在首次保存配置或首次运行时自动生成稳定设备身份并写回配置
+- GUI 在首次启动时即使还没有 `client.json` 也可以直接打开，保存后会写入系统用户配置目录
+- GUI 首次无配置启动时会自动生成一个尽量不重名的 `device_name`
 - 如果联调阶段需要临时直连公网 `http://...`，再显式加上 `"allow_insecure_http": true`；正式环境仍建议走反代后的 `https://...`
 
 ## 5. 启动 GUI
@@ -80,10 +85,11 @@ go build ./...
 macOS / Windows 推荐直接启动 GUI：
 
 ```bash
-./snt-gui -config ./client.json
+./snt-gui
 ```
 
 启动后会直接打开原生窗口，不再依赖浏览器。
+GUI 默认使用系统用户配置目录下的 `client.json`。
 如果 `auto_connect=true`，GUI 打开后会自动尝试拉起客户端。
 
 ## 6. 设置登录后自动启动

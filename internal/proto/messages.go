@@ -18,6 +18,11 @@ const (
 	DataKindRequest   = "service_request"
 	DataKindResponse  = "service_response"
 	DataKindKeepalive = "keepalive"
+	DataKindTCPOpen   = "tcp_open"
+	DataKindTCPOk     = "tcp_open_result"
+	DataKindTCPData   = "tcp_data"
+	DataKindTCPAck    = "tcp_ack"
+	DataKindTCPClose  = "tcp_close"
 )
 
 type JoinNetworkRequest struct {
@@ -46,7 +51,8 @@ type LeaveNetworkResponse struct {
 }
 
 type ServiceInfo struct {
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 type PeerInfo struct {
@@ -102,9 +108,13 @@ type DataMessage struct {
 
 type ServicePayload struct {
 	Kind      string `json:"kind"`
+	Protocol  string `json:"protocol,omitempty"`
 	BindName  string `json:"bind_name,omitempty"`
 	Service   string `json:"service,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
+	StreamSeq uint64 `json:"stream_seq,omitempty"`
+	Ack       uint64 `json:"ack,omitempty"`
+	Error     string `json:"error,omitempty"`
 	Payload   []byte `json:"payload,omitempty"`
 }
 
@@ -118,13 +128,14 @@ type NetworkDevicesResponse struct {
 }
 
 type NetworkDeviceStatus struct {
-	DeviceID     string    `json:"device_id"`
-	DeviceName   string    `json:"device_name"`
-	State        string    `json:"state"`
-	ObservedAddr string    `json:"observed_addr,omitempty"`
-	Candidates   []string  `json:"candidates,omitempty"`
-	Services     []string  `json:"services,omitempty"`
-	LastSeen     time.Time `json:"last_seen"`
+	DeviceID       string        `json:"device_id"`
+	DeviceName     string        `json:"device_name"`
+	State          string        `json:"state"`
+	ObservedAddr   string        `json:"observed_addr,omitempty"`
+	Candidates     []string      `json:"candidates,omitempty"`
+	Services       []string      `json:"services,omitempty"`
+	ServiceDetails []ServiceInfo `json:"service_details,omitempty"`
+	LastSeen       time.Time     `json:"last_seen"`
 }
 
 type KickDeviceRequest struct {
@@ -136,6 +147,14 @@ type KickDeviceResponse struct {
 	Removed    bool   `json:"removed"`
 	DeviceID   string `json:"device_id,omitempty"`
 	DeviceName string `json:"device_name,omitempty"`
+}
+
+type LogLevelUpdateRequest struct {
+	LogLevel string `json:"log_level"`
+}
+
+type LogLevelResponse struct {
+	LogLevel string `json:"log_level"`
 }
 
 type APIErrorResponse struct {

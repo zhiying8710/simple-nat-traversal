@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"simple-nat-traversal/internal/config"
+	"simple-nat-traversal/internal/logx"
 	"simple-nat-traversal/internal/proto"
 	"simple-nat-traversal/internal/secure"
 )
@@ -30,7 +30,12 @@ const (
 	replayWindowSize = 4096
 	bindSessionTTL   = 2 * time.Minute
 	serviceProxyTTL  = 2 * time.Minute
+	tcpIdleTTL       = 24 * time.Hour
 	traceEventLimit  = 80
+	tcpChunkSize     = 1200
+	tcpSendWindow    = 32
+	tcpResendAfter   = 250 * time.Millisecond
+	tcpOpenTimeout   = 5 * time.Second
 )
 
 var joinRequestTimeout = 6 * time.Second
@@ -131,10 +136,12 @@ type sessionState struct {
 type bindProxy struct {
 	name string
 	cfg  config.BindConfig
-	conn *net.UDPConn
+	udp  *net.UDPConn
+	tcp  net.Listener
 
 	mu          sync.Mutex
 	sessions    map[string]*bindSession
+	tcpStreams  map[string]*tcpBindStream
 	lastDropLog time.Time
 }
 
@@ -149,8 +156,19 @@ type serviceProxy struct {
 	bindName  string
 	service   string
 	sessionID string
-	conn      *net.UDPConn
+	protocol  string
+	udpConn   *net.UDPConn
+	tcpConn   net.Conn
+	sender    *tcpReliableSender
+	inboundCh chan tcpFrameEvent
+	done      chan struct{}
 	lastSeen  atomic.Int64
+	closeOnce sync.Once
+	onClose   func()
+
+	mu      sync.Mutex
+	nextSeq uint64
+	pending map[uint64][]byte
 }
 
 func Run(ctx context.Context, cfg config.ClientConfig) error {
@@ -168,6 +186,9 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 }
 
 func (c *Client) Run(ctx context.Context) error {
+	if _, err := logx.SetLevel(c.cfg.LogLevel); err != nil {
+		return err
+	}
 	c.startedAt = time.Now()
 	if c.rejoinCh == nil {
 		c.rejoinCh = make(chan string, 1)
@@ -200,7 +221,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return err
 	}
 
-	log.Printf("client %s joined network local_udp=%s server_udp=%s admin=%s", c.cfg.DeviceName, c.udpConn.LocalAddr(), session.serverUDPAddr, firstNonEmpty(c.adminAddr, "disabled"))
+	logx.Infof("client %s joined network local_udp=%s server_udp=%s admin=%s", c.cfg.DeviceName, c.udpConn.LocalAddr(), session.serverUDPAddr, firstNonEmpty(c.adminAddr, "disabled"))
 
 	errCh := make(chan error, 1)
 	go c.readLoop(ctx, errCh)
@@ -360,44 +381,85 @@ func (c *Client) startBindListeners() error {
 
 	for _, name := range names {
 		bindCfg := c.cfg.Binds[name]
-		addr, err := net.ResolveUDPAddr("udp", bindCfg.Local)
-		if err != nil {
-			return fmt.Errorf("resolve bind %s local addr: %w", name, err)
-		}
-		conn, err := net.ListenUDP("udp", addr)
-		if err != nil {
-			return fmt.Errorf("listen bind %s: %w", name, err)
-		}
 		bind := &bindProxy{
-			name:     name,
-			cfg:      bindCfg,
-			conn:     conn,
-			sessions: map[string]*bindSession{},
+			name:       name,
+			cfg:        bindCfg,
+			sessions:   map[string]*bindSession{},
+			tcpStreams: map[string]*tcpBindStream{},
+		}
+		var listenAddr string
+		switch bindCfg.Protocol {
+		case config.ServiceProtocolTCP:
+			ln, err := net.Listen("tcp", bindCfg.Local)
+			if err != nil {
+				return fmt.Errorf("listen tcp bind %s: %w", name, err)
+			}
+			bind.tcp = ln
+			listenAddr = ln.Addr().String()
+			go c.runTCPBind(bind)
+		default:
+			addr, err := net.ResolveUDPAddr("udp", bindCfg.Local)
+			if err != nil {
+				return fmt.Errorf("resolve bind %s local addr: %w", name, err)
+			}
+			conn, err := net.ListenUDP("udp", addr)
+			if err != nil {
+				return fmt.Errorf("listen bind %s: %w", name, err)
+			}
+			bind.udp = conn
+			listenAddr = conn.LocalAddr().String()
+			go c.runBind(bind)
 		}
 		c.mu.Lock()
 		c.binds[name] = bind
 		c.mu.Unlock()
-		go c.runBind(bind)
-		log.Printf("bind %s listening on %s -> peer=%s service=%s", name, conn.LocalAddr(), bindCfg.Peer, bindCfg.Service)
+		logx.Infof("bind %s listening on %s -> protocol=%s peer=%s service=%s", name, listenAddr, bindCfg.Protocol, bindCfg.Peer, bindCfg.Service)
 	}
 	return nil
 }
 
 func (c *Client) closeResources() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	udpConn := c.udpConn
+	adminServer := c.adminServer
 
-	if c.udpConn != nil {
-		_ = c.udpConn.Close()
-	}
-	if c.adminServer != nil {
-		_ = c.adminServer.Close()
-	}
+	binds := make([]*bindProxy, 0, len(c.binds))
 	for _, bind := range c.binds {
-		_ = bind.conn.Close()
+		binds = append(binds, bind)
 	}
-	for _, proxy := range c.serviceProxies {
-		_ = proxy.conn.Close()
+	proxies := make([]*serviceProxy, 0, len(c.serviceProxies))
+	for key, proxy := range c.serviceProxies {
+		delete(c.serviceProxies, key)
+		proxies = append(proxies, proxy)
+	}
+	c.mu.Unlock()
+
+	if udpConn != nil {
+		_ = udpConn.Close()
+	}
+	if adminServer != nil {
+		_ = adminServer.Close()
+	}
+	for _, bind := range binds {
+		if bind.udp != nil {
+			_ = bind.udp.Close()
+		}
+		if bind.tcp != nil {
+			_ = bind.tcp.Close()
+		}
+		var streams []*tcpBindStream
+		bind.mu.Lock()
+		for sessionID, stream := range bind.tcpStreams {
+			delete(bind.tcpStreams, sessionID)
+			streams = append(streams, stream)
+		}
+		bind.mu.Unlock()
+		for _, stream := range streams {
+			stream.close()
+		}
+	}
+	for _, proxy := range proxies {
+		proxy.close()
 	}
 }
 
@@ -431,7 +493,7 @@ func (c *Client) registerLoop(ctx context.Context) {
 			return
 		case <-timer.C:
 			if err := c.sendRegister(); err != nil {
-				log.Printf("register failed: %v", err)
+				logx.Warnf("register failed: %v", err)
 			}
 		}
 	}
@@ -450,7 +512,7 @@ func (c *Client) keepaliveLoop(ctx context.Context) {
 			for _, peerID := range peerIDs {
 				payload := proto.ServicePayload{Kind: proto.DataKindKeepalive}
 				if err := c.sendServicePayload(peerID, payload); err != nil {
-					log.Printf("keepalive to %s failed: %v", peerID, err)
+					logx.Warnf("keepalive to %s failed: %v", peerID, err)
 				}
 			}
 		}
@@ -516,7 +578,7 @@ func (c *Client) punchTargets() []punchTarget {
 		}
 		peer.punchAttempts++
 		if !peer.punchingLogged {
-			log.Printf("peer discovered: name=%s id=%s candidates=%v services=%v", firstNonEmpty(peer.info.DeviceName, peer.info.DeviceID), peer.info.DeviceID, udpAddrsToStrings(peer.candidates), serviceNames(peer.info.Services))
+			logx.Debugf("peer discovered: name=%s id=%s candidates=%v services=%v", firstNonEmpty(peer.info.DeviceName, peer.info.DeviceID), peer.info.DeviceID, udpAddrsToStrings(peer.candidates), serviceNames(peer.info.Services))
 			peer.punchingLogged = true
 			c.recordEventLocked("peer", peer.info.DeviceID, peer.info.DeviceName, "punch_started", fmt.Sprintf("candidates=%s", candidateListString(peer.candidates)))
 		}
@@ -549,14 +611,18 @@ func (c *Client) sendRegister() error {
 	}
 
 	services := make([]proto.ServiceInfo, 0, len(c.cfg.Publish))
-	for name := range c.cfg.Publish {
-		services = append(services, proto.ServiceInfo{Name: name})
+	for name, publish := range c.cfg.Publish {
+		services = append(services, proto.ServiceInfo{Name: name, Protocol: publish.Protocol})
 	}
 	slices.SortFunc(services, func(a, b proto.ServiceInfo) int {
 		switch {
 		case a.Name < b.Name:
 			return -1
 		case a.Name > b.Name:
+			return 1
+		case a.Protocol < b.Protocol:
+			return -1
+		case a.Protocol > b.Protocol:
 			return 1
 		default:
 			return 0
@@ -582,7 +648,7 @@ func (c *Client) sendRegister() error {
 func (c *Client) handleDatagram(addr *net.UDPAddr, raw []byte) {
 	env, err := proto.UnmarshalEnvelope(raw)
 	if err != nil {
-		log.Printf("invalid udp envelope from %s: %v", addr, err)
+		logx.Debugf("invalid udp envelope from %s: %v", addr, err)
 		return
 	}
 
@@ -608,7 +674,7 @@ func (c *Client) handleDatagram(addr *net.UDPAddr, raw []byte) {
 			c.handleError(addr, env.Error)
 		}
 	default:
-		log.Printf("unknown udp envelope type=%s from %s", env.Type, addr)
+		logx.Warnf("unknown udp envelope type=%s from %s", env.Type, addr)
 	}
 }
 
@@ -618,13 +684,13 @@ func (c *Client) handleRegisterAck(msg *proto.RegisterAckMessage) {
 	c.observedAddr = msg.ObservedAddr
 	c.mu.Unlock()
 	if previous != msg.ObservedAddr {
-		log.Printf("server observed public udp addr: %s", msg.ObservedAddr)
+		logx.Infof("server observed public udp addr: %s", msg.ObservedAddr)
 		c.recordEvent("client", "", "", "observed_addr_changed", msg.ObservedAddr)
 	}
 }
 
 func (c *Client) handleError(addr *net.UDPAddr, msg *proto.ErrorMessage) {
-	log.Printf("server/client error from %s: %s", addr, msg.Message)
+	logx.Warnf("server/client error from %s: %s", addr, msg.Message)
 	c.recordEvent("client", "", "", "remote_error", fmt.Sprintf("addr=%s message=%s", addr, msg.Message))
 	if strings.Contains(strings.ToLower(msg.Message), "invalid device session") {
 		c.requestRejoin("invalid_device_session")
@@ -634,9 +700,9 @@ func (c *Client) handleError(addr *net.UDPAddr, msg *proto.ErrorMessage) {
 func (c *Client) handlePeerSync(msg *proto.PeerSyncMessage) {
 	session := c.networkSnapshot()
 
+	var proxiesToClose []*serviceProxy
+	var streamsToClose []*tcpBindStream
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	now := time.Now()
 	seen := map[string]struct{}{}
 	for _, info := range msg.Peers {
@@ -663,10 +729,10 @@ func (c *Client) handlePeerSync(msg *proto.PeerSyncMessage) {
 			peer.handshake = c.newHandshakeLocked()
 		}
 		if oldName == "" {
-			log.Printf("peer announced: name=%s id=%s candidates=%v services=%v", firstNonEmpty(info.DeviceName, info.DeviceID), info.DeviceID, info.Candidates, serviceNames(info.Services))
+			logx.Debugf("peer announced: name=%s id=%s candidates=%v services=%v", firstNonEmpty(info.DeviceName, info.DeviceID), info.DeviceID, info.Candidates, serviceNames(info.Services))
 			c.recordEventLocked("peer", info.DeviceID, info.DeviceName, "peer_announced", fmt.Sprintf("candidates=%s services=%s", strings.Join(info.Candidates, ","), strings.Join(serviceNames(info.Services), ",")))
 		} else if !slices.Equal(oldCandidates, info.Candidates) || !slices.Equal(oldServices, serviceNames(info.Services)) || oldName != info.DeviceName {
-			log.Printf("peer updated: name=%s id=%s candidates=%v services=%v", firstNonEmpty(info.DeviceName, info.DeviceID), info.DeviceID, info.Candidates, serviceNames(info.Services))
+			logx.Debugf("peer updated: name=%s id=%s candidates=%v services=%v", firstNonEmpty(info.DeviceName, info.DeviceID), info.DeviceID, info.Candidates, serviceNames(info.Services))
 			c.recordEventLocked("peer", info.DeviceID, info.DeviceName, "peer_updated", fmt.Sprintf("candidates=%s services=%s", strings.Join(info.Candidates, ","), strings.Join(serviceNames(info.Services), ",")))
 		}
 		seen[info.DeviceID] = struct{}{}
@@ -675,18 +741,28 @@ func (c *Client) handlePeerSync(msg *proto.PeerSyncMessage) {
 		if _, ok := seen[deviceID]; ok {
 			continue
 		}
-		log.Printf("peer offline: name=%s id=%s", firstNonEmpty(c.peers[deviceID].info.DeviceName, deviceID), deviceID)
+		logx.Infof("peer offline: name=%s id=%s", firstNonEmpty(c.peers[deviceID].info.DeviceName, deviceID), deviceID)
 		c.peers[deviceID].lastOfflineReason = "removed_from_server_peer_list"
 		c.recordEventLocked("peer", deviceID, c.peers[deviceID].info.DeviceName, "peer_offline", "removed_from_server_peer_list")
-		c.dropPeerLocked(deviceID)
+		proxies, streams := c.dropPeerLocked(deviceID)
+		proxiesToClose = append(proxiesToClose, proxies...)
+		streamsToClose = append(streamsToClose, streams...)
 		delete(c.peers, deviceID)
+	}
+	c.mu.Unlock()
+
+	for _, proxy := range proxiesToClose {
+		proxy.close()
+	}
+	for _, stream := range streamsToClose {
+		stream.close()
 	}
 }
 
 func (c *Client) handlePunchHello(addr *net.UDPAddr, msg *proto.PunchHelloMessage) {
 	session := c.networkSnapshot()
 	if !secure.VerifyPunchMAC(session.networkKey, msg.FromID, msg.Nonce, msg.Public, msg.MAC) {
-		log.Printf("drop invalid punch hello from %s", addr)
+		logx.Debugf("drop invalid punch hello from %s", addr)
 		c.recordEvent("peer", msg.FromID, msg.FromName, "punch_rejected", fmt.Sprintf("invalid_mac addr=%s", addr))
 		return
 	}
@@ -695,14 +771,14 @@ func (c *Client) handlePunchHello(addr *net.UDPAddr, msg *proto.PunchHelloMessag
 	peer := c.peers[msg.FromID]
 	if peer == nil {
 		c.mu.Unlock()
-		log.Printf("ignore punch hello from unknown peer id=%s name=%s addr=%s", msg.FromID, msg.FromName, addr)
+		logx.Debugf("ignore punch hello from unknown peer id=%s name=%s addr=%s", msg.FromID, msg.FromName, addr)
 		c.recordEvent("peer", msg.FromID, msg.FromName, "punch_ignored", fmt.Sprintf("unknown_peer addr=%s", addr))
 		return
 	}
 	identityPublic := slices.Clone(peer.info.IdentityPublic)
 	if !secure.VerifyPunchHelloSignature(identityPublic, msg.FromID, msg.Nonce, msg.Public, msg.Signature) {
 		c.mu.Unlock()
-		log.Printf("drop invalid punch signature from %s for peer=%s", addr, msg.FromID)
+		logx.Debugf("drop invalid punch signature from %s for peer=%s", addr, msg.FromID)
 		c.recordEvent("peer", msg.FromID, msg.FromName, "punch_rejected", fmt.Sprintf("invalid_signature addr=%s", addr))
 		return
 	}
@@ -717,19 +793,19 @@ func (c *Client) handlePunchHello(addr *net.UDPAddr, msg *proto.PunchHelloMessag
 	peerPub, err := secure.ParsePeerPublicKey(msg.Public)
 	if err != nil {
 		c.mu.Unlock()
-		log.Printf("parse peer public key from %s failed: %v", addr, err)
+		logx.Warnf("parse peer public key from %s failed: %v", addr, err)
 		return
 	}
 	sharedSecret, err := peer.handshake.private.ECDH(peerPub)
 	if err != nil {
 		c.mu.Unlock()
-		log.Printf("derive shared secret with %s failed: %v", msg.FromID, err)
+		logx.Warnf("derive shared secret with %s failed: %v", msg.FromID, err)
 		return
 	}
 	key, err := secure.DeriveSessionKey(session.networkKey, session.deviceID, msg.FromID, peer.handshake.nonce, msg.Nonce, peer.handshake.public, msg.Public, sharedSecret)
 	if err != nil {
 		c.mu.Unlock()
-		log.Printf("derive session key with %s failed: %v", msg.FromID, err)
+		logx.Warnf("derive session key with %s failed: %v", msg.FromID, err)
 		return
 	}
 	reply := proto.Envelope{
@@ -750,12 +826,12 @@ func (c *Client) handlePunchHello(addr *net.UDPAddr, msg *proto.PunchHelloMessag
 			lastSeen:      time.Now(),
 			establishedAt: time.Now(),
 		}
-		log.Printf("p2p established: peer=%s id=%s addr=%s", firstNonEmpty(peer.info.DeviceName, msg.FromID), msg.FromID, addr)
+		logx.Infof("p2p established: peer=%s id=%s addr=%s", firstNonEmpty(peer.info.DeviceName, msg.FromID), msg.FromID, addr)
 	} else {
 		peer.session.key = key
 		peer.session.lastSeen = time.Now()
 		if peer.chosenAddr == nil || peer.chosenAddr.String() != addr.String() {
-			log.Printf("p2p route updated: peer=%s id=%s addr=%s", firstNonEmpty(peer.info.DeviceName, msg.FromID), msg.FromID, addr)
+			logx.Infof("p2p route updated: peer=%s id=%s addr=%s", firstNonEmpty(peer.info.DeviceName, msg.FromID), msg.FromID, addr)
 		}
 	}
 	setPeerRouteLocked(c, peer, addr, "received_punch_hello")
@@ -801,7 +877,7 @@ func (c *Client) rejoinUntilSuccess(ctx context.Context, reason string) {
 			c.markRejoinSuccess(reason)
 			return
 		} else {
-			log.Printf("rejoin failed: reason=%s attempt=%d err=%v", reason, attempt, err)
+			logx.Warnf("rejoin failed: reason=%s attempt=%d err=%v", reason, attempt, err)
 			c.markRejoinFailure(reason, err)
 			c.recordEvent("client", "", "", "rejoin_failed", fmt.Sprintf("reason=%s attempt=%d err=%v", reason, attempt, err))
 		}
@@ -832,7 +908,7 @@ func (c *Client) rejoinNetwork(ctx context.Context, reason string) error {
 		return fmt.Errorf("send register after rejoin: %w", err)
 	}
 
-	log.Printf("client %s rejoined network reason=%s old_device_id=%s new_device_id=%s server_udp=%s", c.cfg.DeviceName, reason, previous.deviceID, current.deviceID, current.serverUDPAddr)
+	logx.Infof("client %s rejoined network reason=%s old_device_id=%s new_device_id=%s server_udp=%s", c.cfg.DeviceName, reason, previous.deviceID, current.deviceID, current.serverUDPAddr)
 	c.recordEvent("client", "", "", "rejoined_network", fmt.Sprintf("reason=%s old_device_id=%s new_device_id=%s server_udp=%s", reason, previous.deviceID, current.deviceID, current.serverUDPAddr))
 	return nil
 }
@@ -851,7 +927,7 @@ func (c *Client) handleData(addr *net.UDPAddr, msg *proto.DataMessage) {
 	plaintext, err := secure.DecryptPacket(peer.session.key, msg.Seq, msg.Ciphertext)
 	if err != nil {
 		c.mu.Unlock()
-		log.Printf("decrypt packet from %s failed: %v", msg.FromID, err)
+		logx.Warnf("decrypt packet from %s failed: %v", msg.FromID, err)
 		return
 	}
 	previousRoute := udpAddrString(peer.chosenAddr)
@@ -869,7 +945,7 @@ func (c *Client) handleData(addr *net.UDPAddr, msg *proto.DataMessage) {
 
 	payload, err := proto.UnmarshalServicePayload(plaintext)
 	if err != nil {
-		log.Printf("decode service payload from %s failed: %v", msg.FromID, err)
+		logx.Warnf("decode service payload from %s failed: %v", msg.FromID, err)
 		return
 	}
 	session.recvPackets.Add(1)
@@ -882,26 +958,43 @@ func (c *Client) handleData(addr *net.UDPAddr, msg *proto.DataMessage) {
 		c.handleServiceRequest(msg.FromID, payload)
 	case proto.DataKindResponse:
 		c.handleServiceResponse(msg.FromID, payload)
+	case proto.DataKindTCPOpen:
+		c.handleTCPOpen(msg.FromID, payload)
+	case proto.DataKindTCPOk:
+		c.handleTCPOpenResult(msg.FromID, payload)
+	case proto.DataKindTCPData:
+		c.handleTCPData(msg.FromID, payload)
+	case proto.DataKindTCPAck:
+		c.handleTCPAck(msg.FromID, payload)
+	case proto.DataKindTCPClose:
+		c.handleTCPClose(msg.FromID, payload)
 	default:
-		log.Printf("unknown service payload kind=%s from %s", payload.Kind, msg.FromID)
+		logx.Warnf("unknown service payload kind=%s from %s", payload.Kind, msg.FromID)
 	}
 }
 
 func (c *Client) handleServiceRequest(peerID string, payload proto.ServicePayload) {
+	if payload.Protocol != "" && payload.Protocol != config.ServiceProtocolUDP {
+		return
+	}
 	publish, ok := c.cfg.Publish[payload.Service]
 	if !ok {
-		log.Printf("service request for unknown publish=%s from %s", payload.Service, peerID)
+		logx.Debugf("service request for unknown publish=%s from %s", payload.Service, peerID)
+		return
+	}
+	if publish.Protocol != config.ServiceProtocolUDP {
+		logx.Debugf("service request for non-udp publish=%s from %s", payload.Service, peerID)
 		return
 	}
 
 	proxy, err := c.getOrCreateServiceProxy(peerID, payload.BindName, payload.Service, payload.SessionID, publish.Local)
 	if err != nil {
-		log.Printf("service proxy %s/%s create failed: %v", peerID, payload.Service, err)
+		logx.Warnf("service proxy %s/%s create failed: %v", peerID, payload.Service, err)
 		return
 	}
 	proxy.touch()
-	if _, err := proxy.conn.Write(payload.Payload); err != nil {
-		log.Printf("write to local publish service %s failed: %v", payload.Service, err)
+	if _, err := proxy.udpConn.Write(payload.Payload); err != nil {
+		logx.Warnf("write to local publish service %s failed: %v", payload.Service, err)
 	}
 }
 
@@ -913,7 +1006,7 @@ func (c *Client) handleServiceResponse(peerID string, payload proto.ServicePaylo
 	if bind == nil || peer == nil {
 		return
 	}
-	if peer.info.DeviceName != bind.cfg.Peer {
+	if bind.cfg.Protocol != config.ServiceProtocolUDP || peer.info.DeviceName != bind.cfg.Peer {
 		return
 	}
 
@@ -926,8 +1019,8 @@ func (c *Client) handleServiceResponse(peerID string, payload proto.ServicePaylo
 	if session == nil {
 		return
 	}
-	if _, err := bind.conn.WriteToUDP(payload.Payload, session.appAddr); err != nil {
-		log.Printf("write bind response %s failed: %v", bind.name, err)
+	if _, err := bind.udp.WriteToUDP(payload.Payload, session.appAddr); err != nil {
+		logx.Warnf("write bind response %s failed: %v", bind.name, err)
 	}
 }
 
@@ -957,7 +1050,9 @@ func (c *Client) getOrCreateServiceProxy(peerID, bindName, service, sessionID, t
 		bindName:  bindName,
 		service:   service,
 		sessionID: sessionID,
-		conn:      conn,
+		protocol:  config.ServiceProtocolUDP,
+		udpConn:   conn,
+		done:      make(chan struct{}),
 	}
 	proxy.touch()
 
@@ -977,7 +1072,7 @@ func (c *Client) getOrCreateServiceProxy(peerID, bindName, service, sessionID, t
 func (c *Client) runServiceProxy(proxy *serviceProxy) {
 	buf := make([]byte, maxDatagramSize)
 	for {
-		n, err := proxy.conn.Read(buf)
+		n, err := proxy.udpConn.Read(buf)
 		if err != nil {
 			return
 		}
@@ -990,7 +1085,7 @@ func (c *Client) runServiceProxy(proxy *serviceProxy) {
 			Payload:   slices.Clone(buf[:n]),
 		}
 		if err := c.sendServicePayload(proxy.peerID, payload); err != nil {
-			log.Printf("service proxy response send failed: %v", err)
+			logx.Warnf("service proxy response send failed: %v", err)
 		}
 	}
 }
@@ -998,12 +1093,12 @@ func (c *Client) runServiceProxy(proxy *serviceProxy) {
 func (c *Client) runBind(bind *bindProxy) {
 	buf := make([]byte, maxDatagramSize)
 	for {
-		n, appAddr, err := bind.conn.ReadFromUDP(buf)
+		n, appAddr, err := bind.udp.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
 
-		peerID, err := c.peerIDForBind(bind.cfg.Peer, bind.cfg.Service)
+		peerID, _, err := c.peerIDForBind(bind.cfg.Peer, bind.cfg.Service, bind.cfg.Protocol)
 		if err != nil {
 			bind.logDrop(bind.name, err)
 			continue
@@ -1025,12 +1120,12 @@ func (c *Client) runBind(bind *bindProxy) {
 			Payload:   slices.Clone(buf[:n]),
 		}
 		if err := c.sendServicePayload(peerID, payload); err != nil {
-			log.Printf("bind %s send failed: %v", bind.name, err)
+			logx.Warnf("bind %s send failed: %v", bind.name, err)
 		}
 	}
 }
 
-func (c *Client) peerIDForBind(peerName, service string) (string, error) {
+func (c *Client) peerIDForBind(peerName, service, protocol string) (string, string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -1039,14 +1134,14 @@ func (c *Client) peerIDForBind(peerName, service string) (string, error) {
 			continue
 		}
 		if peer.session == nil || peer.chosenAddr == nil {
-			return "", fmt.Errorf("peer %s has no established p2p session", peerName)
+			return "", "", fmt.Errorf("peer %s has no established p2p session", peerName)
 		}
-		if !peerAdvertisesService(peer.info, service) {
-			return "", fmt.Errorf("peer %s does not publish service %s", peerName, service)
+		if !peerAdvertisesService(peer.info, service, protocol) {
+			return "", "", fmt.Errorf("peer %s does not publish service %s/%s", peerName, service, protocol)
 		}
-		return peer.info.DeviceID, nil
+		return peer.info.DeviceID, peer.info.DeviceName, nil
 	}
-	return "", fmt.Errorf("peer %s is not online", peerName)
+	return "", "", fmt.Errorf("peer %s is not online", peerName)
 }
 
 func (c *Client) sendServicePayload(peerID string, payload proto.ServicePayload) error {
@@ -1115,7 +1210,7 @@ func (c *Client) establishedPeerIDs() []string {
 func (c *Client) newHandshakeLocked() *handshakeState {
 	priv, pub, nonce, err := secure.NewEphemeralKey()
 	if err != nil {
-		log.Printf("create handshake state failed: %v", err)
+		logx.Warnf("create handshake state failed: %v", err)
 		return nil
 	}
 	return &handshakeState{
@@ -1157,7 +1252,7 @@ func (c *Client) ensureIdentityKey() error {
 func mustSignPunchHello(privateKey ed25519.PrivateKey, fromID string, nonce, public []byte) []byte {
 	signature, err := secure.SignPunchHello(privateKey, fromID, nonce, public)
 	if err != nil {
-		log.Printf("sign punch hello failed for %s: %v", fromID, err)
+		logx.Warnf("sign punch hello failed for %s: %v", fromID, err)
 		return nil
 	}
 	return signature
@@ -1247,9 +1342,20 @@ func addrIP(addr net.Addr) net.IP {
 	}
 }
 
-func peerAdvertisesService(peer proto.PeerInfo, service string) bool {
+func peerAdvertisesService(peer proto.PeerInfo, service, protocol string) bool {
+	protocol = strings.TrimSpace(protocol)
+	if protocol == "" {
+		protocol = config.ServiceProtocolUDP
+	}
 	for _, candidate := range peer.Services {
-		if candidate.Name == service {
+		if candidate.Name != service {
+			continue
+		}
+		advertisedProtocol := strings.TrimSpace(candidate.Protocol)
+		if advertisedProtocol == "" {
+			advertisedProtocol = config.ServiceProtocolUDP
+		}
+		if advertisedProtocol == protocol {
 			return true
 		}
 	}

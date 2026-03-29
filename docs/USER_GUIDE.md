@@ -4,21 +4,22 @@
 
 1. 启动 [snt-gui](/Users/zhiying8710/wk/simple-nat-traversal/cmd/snt-gui/main.go)
    它会直接打开原生桌面窗口，不再走浏览器页
-2. 在“配置”页填好：
+2. 如果这是第一次启动，没有现成 `client.json` 也没关系。
+   GUI 会先用默认值打开，并自动生成一个候选 `device_name`
+3. 在“连接”页填好：
    - `server_url`
    - `password`
    - `admin_password`（如果要查看 network / 踢设备）
    - 如果联调阶段要直连公网 `http://...`，再打开 `allow_insecure_http`
    - `device_name`
-   - `publish`
-   - `bind`
-3. 保存配置
-4. 点击“启动客户端”
-5. 在总览 / peers / trace / network 中确认状态
+4. 保存配置
+5. 点击“启动客户端”
+6. 在总览 / network / trace / logs 中确认状态
 
 ## 配置建议
 
 - `device_name` 保持稳定且唯一
+- 没有特殊原因时，首次自动生成的 `device_name` 可以直接沿用
 - `password` 至少 16 位
 - `admin_password` 和 `password` 分开设置
 - `admin_listen` 保持在 `127.0.0.1`
@@ -29,11 +30,14 @@
 
 ### 发布本地 UDP 服务
 
+进入 GUI 的“服务”页，在“我发布的服务”区域填写服务名和本地 UDP 地址。
 例如把本机 `127.0.0.1:19132` 发布成 `game`。
 
 ### 绑定远端 UDP 服务
 
-例如把 `winpc` 的 `game` 映射到本机 `127.0.0.1:29132`。
+推荐直接在“发现到的远端服务”区域选择在线设备发布出来的服务，然后点击“一键绑定到本机随机端口”。
+
+如果需要手工指定本地监听地址，也可以在“我绑定的服务”区域编辑。
 
 ### 看当前在线设备
 
@@ -59,6 +63,12 @@
 - Logs
 
 这三个区域联合判断。
+
+## 安装包说明
+
+- Windows 建议使用安装器 `setup.exe`
+- macOS 建议使用 `dmg`
+- GUI 默认使用系统用户配置目录下的 `client.json`，不依赖启动时所在目录
 
 ## CLI 备用命令
 

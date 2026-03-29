@@ -3,12 +3,14 @@ package fyneapp
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	fyneTest "fyne.io/fyne/v2/test"
 
 	"simple-nat-traversal/internal/autostart"
+	"simple-nat-traversal/internal/client"
 	"simple-nat-traversal/internal/config"
 	"simple-nat-traversal/internal/control"
 	"simple-nat-traversal/internal/proto"
@@ -29,6 +31,9 @@ func newTestApp(t *testing.T, cfg Config) *App {
 	if cfg.UninstallAutostart == nil {
 		cfg.UninstallAutostart = autostart.Uninstall
 	}
+	if cfg.SetRuntimeLogLevel == nil {
+		cfg.SetRuntimeLogLevel = client.SetRuntimeLogLevel
+	}
 	if cfg.LoadOverview == nil {
 		cfg.LoadOverview = control.LoadOverviewForConfig
 	}
@@ -39,10 +44,12 @@ func newTestApp(t *testing.T, cfg Config) *App {
 	})
 
 	a := &App{
-		cfg:         cfg,
-		app:         fyneApp,
-		window:      fyneApp.NewWindow("test"),
-		refreshHook: func() {},
+		cfg:               cfg,
+		app:               fyneApp,
+		window:            fyneApp.NewWindow("test"),
+		locale:            localeEnglish,
+		defaultDeviceName: "test-device-abc123",
+		refreshHook:       func() {},
 	}
 	a.buildUI()
 	return a
@@ -91,8 +98,14 @@ func TestCollectConfigFromFormPreservesSavedSecrets(t *testing.T) {
 	app.autoConnectCheck.SetChecked(true)
 	app.udpListenEntry.SetText(":9999")
 	app.adminListenEntry.SetText("127.0.0.1:19999")
-	app.publishEntry.SetText("{\"dns\":{\"local\":\"127.0.0.1:5300\"}}")
-	app.bindsEntry.SetText("{\"peer-dns\":{\"peer\":\"linux-box\",\"service\":\"dns\",\"local\":\"127.0.0.1:5301\"}}")
+	app.mu.Lock()
+	app.draftPublish = map[string]config.PublishConfig{
+		"dns": {Local: "127.0.0.1:5300"},
+	}
+	app.draftBinds = map[string]config.BindConfig{
+		"peer-dns": {Peer: "linux-box", Service: "dns", Local: "127.0.0.1:5301"},
+	}
+	app.mu.Unlock()
 
 	got, err := app.collectConfigFromForm()
 	if err != nil {
@@ -116,6 +129,9 @@ func TestCollectConfigFromFormPreservesSavedSecrets(t *testing.T) {
 	}
 	if !got.AutoConnect {
 		t.Fatal("auto_connect should be true")
+	}
+	if got.LogLevel != config.LogLevelInfo {
+		t.Fatalf("unexpected log level: %q", got.LogLevel)
 	}
 	if got.Publish["dns"].Local != "127.0.0.1:5300" {
 		t.Fatalf("unexpected publish map: %+v", got.Publish)
@@ -247,6 +263,61 @@ func TestStartStopAndAutostartActions(t *testing.T) {
 	}
 }
 
+func TestApplyLogLevelSavesConfigAndUpdatesRuntime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	cfg := config.ClientDefaults()
+	cfg.ServerURL = "http://127.0.0.1:8080"
+	cfg.AllowInsecureHTTP = true
+	cfg.Password = "saved-password"
+	cfg.AdminPassword = "saved-admin"
+	if err := config.SaveClientConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	started := make(chan struct{}, 1)
+	manager := control.NewRuntimeManagerForTest(func(ctx context.Context, cfg config.ClientConfig) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if _, err := manager.Start(path); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	waitForSignal(t, started, "runtime start")
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = manager.Stop(stopCtx)
+	}()
+
+	var appliedLevel string
+	app := newTestApp(t, Config{
+		ConfigPath:     path,
+		RuntimeManager: manager,
+		SetRuntimeLogLevel: func(ctx context.Context, cfg config.ClientConfig, level string) (proto.LogLevelResponse, error) {
+			appliedLevel = level
+			return proto.LogLevelResponse{LogLevel: level}, nil
+		},
+	})
+	app.loadConfigIntoForm()
+	app.logLevelSelect.SetSelected(config.LogLevelDebug)
+
+	if err := app.applyLogLevel(); err != nil {
+		t.Fatalf("applyLogLevel: %v", err)
+	}
+	if appliedLevel != config.LogLevelDebug {
+		t.Fatalf("unexpected applied log level: %q", appliedLevel)
+	}
+
+	saved, err := config.LoadClientConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if saved.LogLevel != config.LogLevelDebug {
+		t.Fatalf("unexpected saved log level: %q", saved.LogLevel)
+	}
+}
+
 func TestKickDeviceUsesInjectedClient(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client.json")
 	cfg := config.ClientDefaults()
@@ -311,6 +382,7 @@ func TestRefreshUsesDraftConfigInsteadOfSavedFile(t *testing.T) {
 	}
 
 	refreshed := make(chan struct{}, 1)
+	refreshDone := make(chan struct{}, 1)
 	app := newTestApp(t, Config{
 		ConfigPath: path,
 		LoadOverview: func(ctx context.Context, executablePath, configPath string, cfg config.ClientConfig, configExists bool, configErr error, opts control.OverviewOptions) (control.Overview, error) {
@@ -344,6 +416,9 @@ func TestRefreshUsesDraftConfigInsteadOfSavedFile(t *testing.T) {
 			}, nil
 		},
 	})
+	app.refreshDoneHook = func() {
+		refreshDone <- struct{}{}
+	}
 
 	app.serverURLEntry.SetText("http://127.0.0.1:8080")
 	app.allowInsecureCheck.SetChecked(true)
@@ -352,4 +427,221 @@ func TestRefreshUsesDraftConfigInsteadOfSavedFile(t *testing.T) {
 
 	app.refreshAll()
 	waitForSignal(t, refreshed, "overview refresh")
+	waitForSignal(t, refreshDone, "refresh completion")
+}
+
+func TestLoadConfigIntoFormWithoutConfigGeneratesDeviceName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+
+	app.loadConfigIntoForm()
+
+	if got := app.deviceNameEntry.Text; strings.TrimSpace(got) == "" {
+		t.Fatal("expected generated default device name")
+	}
+	if got := app.serverURLEntry.Text; got == "" {
+		t.Fatal("expected default server_url to be populated")
+	}
+}
+
+func TestQuickBindDiscoveredServiceSavesBind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	cfg := config.ClientDefaults()
+	cfg.ServerURL = "http://127.0.0.1:8080"
+	cfg.AllowInsecureHTTP = true
+	cfg.Password = "saved-password"
+	cfg.AdminPassword = "saved-admin"
+	cfg.DeviceName = "macbook-air"
+	if err := config.SaveClientConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+	app.loadConfigIntoForm()
+	app.mu.Lock()
+	app.discovered = []discoveredService{
+		{DeviceID: "dev-win", DeviceName: "winpc", ServiceName: "game"},
+	}
+	app.mu.Unlock()
+	app.updateServiceViews()
+	app.discoveredSelect.SetSelected("winpc / game")
+
+	if err := app.quickBindDiscoveredService(); err != nil {
+		t.Fatalf("quickBindDiscoveredService: %v", err)
+	}
+
+	saved, err := config.LoadClientConfig(path)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	bind, ok := saved.Binds["winpc-game"]
+	if !ok {
+		t.Fatalf("expected quick bind to be saved, got %+v", saved.Binds)
+	}
+	if bind.Protocol != config.ServiceProtocolUDP || bind.Peer != "winpc" || bind.Service != "game" || bind.Local != "127.0.0.1:0" {
+		t.Fatalf("unexpected quick bind: %+v", bind)
+	}
+}
+
+func TestQuickBindDiscoveredServicePreservesTCPProtocol(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	cfg := config.ClientDefaults()
+	cfg.ServerURL = "http://127.0.0.1:8080"
+	cfg.AllowInsecureHTTP = true
+	cfg.Password = "saved-password"
+	cfg.AdminPassword = "saved-admin"
+	cfg.DeviceName = "macbook-air"
+	if err := config.SaveClientConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+	app.loadConfigIntoForm()
+	app.mu.Lock()
+	app.discovered = []discoveredService{
+		{DeviceID: "dev-win", DeviceName: "winpc", ServiceName: "rdp", Protocol: config.ServiceProtocolTCP},
+	}
+	app.mu.Unlock()
+	app.updateServiceViews()
+	app.discoveredSelect.SetSelected("winpc / rdp/tcp")
+
+	if err := app.quickBindDiscoveredService(); err != nil {
+		t.Fatalf("quickBindDiscoveredService: %v", err)
+	}
+
+	saved, err := config.LoadClientConfig(path)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	bind, ok := saved.Binds["winpc-rdp-tcp"]
+	if !ok {
+		t.Fatalf("expected quick tcp bind to be saved, got %+v", saved.Binds)
+	}
+	if bind.Protocol != config.ServiceProtocolTCP || bind.Peer != "winpc" || bind.Service != "rdp" || bind.Local != "127.0.0.1:0" {
+		t.Fatalf("unexpected quick tcp bind: %+v", bind)
+	}
+}
+
+func TestUpsertPublishDoesNotLeavePhantomStateOnSaveError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	cfg := config.ClientDefaults()
+	cfg.ServerURL = "https://example.com"
+	cfg.Password = "saved-password"
+	cfg.DeviceName = "saved-device"
+	if err := config.SaveClientConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+	app.loadConfigIntoForm()
+	app.serverURLEntry.SetText("")
+	app.publishNameEntry.SetText("game")
+	app.publishLocalEntry.SetText("127.0.0.1:19132")
+
+	if err := app.upsertPublish(); err == nil {
+		t.Fatal("expected upsertPublish to fail because server_url is invalid")
+	}
+
+	if got := app.publishGrid.Text(); strings.Contains(got, "game") {
+		t.Fatalf("publish grid should not show unsaved service, got %q", got)
+	}
+	saved, err := config.LoadClientConfig(path)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if len(saved.Publish) != 0 {
+		t.Fatalf("publish map changed unexpectedly: %+v", saved.Publish)
+	}
+}
+
+func TestUpsertPublishAndBindPreserveExistingProtocol(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	cfg := config.ClientDefaults()
+	cfg.ServerURL = "http://127.0.0.1:8080"
+	cfg.AllowInsecureHTTP = true
+	cfg.Password = "saved-password"
+	cfg.DeviceName = "saved-device"
+	cfg.Publish = map[string]config.PublishConfig{
+		"rdp": {Protocol: config.ServiceProtocolTCP, Local: "127.0.0.1:3389"},
+	}
+	cfg.Binds = map[string]config.BindConfig{
+		"win-rdp": {Protocol: config.ServiceProtocolTCP, Peer: "winpc", Service: "rdp", Local: "127.0.0.1:13389"},
+	}
+	if err := config.SaveClientConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+	app.loadConfigIntoForm()
+
+	app.publishSelect.SetSelected("rdp")
+	app.publishNameEntry.SetText("rdp")
+	app.publishLocalEntry.SetText("127.0.0.1:3390")
+	if err := app.upsertPublish(); err != nil {
+		t.Fatalf("upsertPublish: %v", err)
+	}
+
+	app.bindSelect.SetSelected("win-rdp")
+	app.bindNameEntry.SetText("win-rdp")
+	app.bindPeerEntry.SetText("winpc")
+	app.bindServiceEntry.SetText("rdp")
+	app.bindLocalEntry.SetText("127.0.0.1:13390")
+	if err := app.upsertBind(); err != nil {
+		t.Fatalf("upsertBind: %v", err)
+	}
+
+	saved, err := config.LoadClientConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if saved.Publish["rdp"].Protocol != config.ServiceProtocolTCP || saved.Publish["rdp"].Local != "127.0.0.1:3390" {
+		t.Fatalf("publish protocol/local not preserved: %+v", saved.Publish)
+	}
+	if saved.Binds["win-rdp"].Protocol != config.ServiceProtocolTCP || saved.Binds["win-rdp"].Local != "127.0.0.1:13390" {
+		t.Fatalf("bind protocol/local not preserved: %+v", saved.Binds)
+	}
+}
+
+func TestBuildDiscoveredServicesUsesStatusPeersWithoutAdminPassword(t *testing.T) {
+	overview := &control.Overview{
+		Status: &client.StatusSnapshot{
+			DeviceName: "macbook-air",
+			Peers: []client.PeerStatus{
+				{
+					DeviceID:   "dev-win",
+					DeviceName: "winpc",
+					Services:   []string{"game", "ssh/tcp"},
+					ServiceDetails: []proto.ServiceInfo{
+						{Name: "game", Protocol: config.ServiceProtocolUDP},
+						{Name: "ssh", Protocol: config.ServiceProtocolTCP},
+					},
+				},
+			},
+		},
+	}
+
+	got := buildDiscoveredServices(overview, "macbook-air")
+	if len(got) != 2 {
+		t.Fatalf("unexpected discovered service count: %+v", got)
+	}
+	if got[0].DeviceName != "winpc" && got[1].DeviceName != "winpc" {
+		t.Fatalf("expected discovered services from peer snapshot: %+v", got)
+	}
+	if got[0].ServiceName == "ssh/tcp" || got[1].ServiceName == "ssh/tcp" {
+		t.Fatalf("expected discovered services to keep raw service names, got: %+v", got)
+	}
+	if (got[0].Protocol != config.ServiceProtocolTCP && got[1].Protocol != config.ServiceProtocolTCP) ||
+		(got[0].Protocol != config.ServiceProtocolUDP && got[1].Protocol != config.ServiceProtocolUDP) {
+		t.Fatalf("expected discovered services to keep protocol detail, got: %+v", got)
+	}
 }

@@ -10,12 +10,14 @@ import (
 	"syscall"
 
 	"simple-nat-traversal/internal/buildinfo"
+	"simple-nat-traversal/internal/config"
 	"simple-nat-traversal/internal/control"
 	"simple-nat-traversal/internal/fyneapp"
+	"simple-nat-traversal/internal/logx"
 )
 
 func main() {
-	configPath := flag.String("config", "client.json", "path to client config")
+	configPath := flag.String("config", config.DefaultGUIClientConfigPath(), "path to client config")
 	versionMode := flag.Bool("version", false, "print version information and exit")
 	flag.Parse()
 
@@ -33,6 +35,9 @@ func main() {
 
 	logBuffer := control.NewLogBuffer(500)
 	log.SetOutput(io.MultiWriter(os.Stderr, logBuffer))
+	if cfg, err := config.LoadClientConfig(*configPath); err == nil {
+		_, _ = logx.SetLevel(cfg.LogLevel)
+	}
 
 	app, err := fyneapp.New(fyneapp.Config{
 		ExecutablePath: executablePath,

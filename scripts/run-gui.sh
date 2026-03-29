@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_PATH="${1:-./client.json}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -x "${SCRIPT_DIR}/snt-gui" ]]; then
@@ -13,4 +12,8 @@ else
   exit 1
 fi
 
-"${GUI_BIN}" -config "${CONFIG_PATH}"
+if [[ $# -gt 0 && -n "${1}" ]]; then
+  "${GUI_BIN}" -config "${1}"
+else
+  "${GUI_BIN}"
+fi

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"simple-nat-traversal/internal/config"
+	"simple-nat-traversal/internal/logx"
 	"simple-nat-traversal/internal/proto"
 	"simple-nat-traversal/internal/secure"
 )
@@ -155,5 +158,48 @@ func TestPruneStaleDevicesRemovesExpiredPendingJoin(t *testing.T) {
 	}
 	if len(srv.deviceOwners) != 1 {
 		t.Fatalf("expected device ownership to remain registered, got %d", len(srv.deviceOwners))
+	}
+}
+
+func TestHandleLogLevelUpdatesRuntimeLevel(t *testing.T) {
+	previous := logx.CurrentLevel()
+	defer func() {
+		_, _ = logx.SetLevel(previous)
+	}()
+	_, _ = logx.SetLevel(config.LogLevelInfo)
+
+	srv, err := New(config.ServerConfig{
+		Password:      "network-password-1234",
+		AdminPassword: "admin-password-5678",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	body, err := json.Marshal(proto.LogLevelUpdateRequest{LogLevel: config.LogLevelDebug})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/log-level", bytes.NewReader(body))
+	req.Header.Set("X-SNT-Admin-Password", "admin-password-5678")
+	rec := httptest.NewRecorder()
+
+	srv.handleLogLevel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp proto.LogLevelResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if resp.LogLevel != config.LogLevelDebug {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if got := logx.CurrentLevel(); got != config.LogLevelDebug {
+		t.Fatalf("unexpected runtime log level: %s", got)
+	}
+	if srv.cfg.LogLevel != config.LogLevelDebug {
+		t.Fatalf("unexpected server config log level: %s", srv.cfg.LogLevel)
 	}
 }

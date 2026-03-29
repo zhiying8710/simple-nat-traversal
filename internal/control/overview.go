@@ -25,6 +25,7 @@ type OverviewConfig struct {
 	AutoConnect             bool                            `json:"auto_connect"`
 	UDPListen               string                          `json:"udp_listen"`
 	AdminListen             string                          `json:"admin_listen"`
+	LogLevel                string                          `json:"log_level"`
 	PasswordConfigured      bool                            `json:"password_configured"`
 	AdminPasswordConfigured bool                            `json:"admin_password_configured"`
 	IdentityConfigured      bool                            `json:"identity_configured"`
@@ -168,6 +169,7 @@ func redactOverviewConfig(cfg config.ClientConfig) OverviewConfig {
 		AutoConnect:             cfg.AutoConnect,
 		UDPListen:               cfg.UDPListen,
 		AdminListen:             cfg.AdminListen,
+		LogLevel:                cfg.LogLevel,
 		PasswordConfigured:      strings.TrimSpace(cfg.Password) != "",
 		AdminPasswordConfigured: strings.TrimSpace(cfg.AdminPassword) != "",
 		IdentityConfigured:      strings.TrimSpace(cfg.IdentityPrivate) != "",
@@ -220,6 +222,7 @@ func RenderOverview(overview Overview) string {
 		fmt.Fprintf(&out, "allow_insecure_http\t%s\n", yesNo(overview.Config.AllowInsecureHTTP))
 		fmt.Fprintf(&out, "udp_listen\t%s\n", dash(overview.Config.UDPListen))
 		fmt.Fprintf(&out, "admin_listen\t%s\n", dash(overview.Config.AdminListen))
+		fmt.Fprintf(&out, "log_level\t%s\n", dash(overview.Config.LogLevel))
 		fmt.Fprintf(&out, "publish_count\t%d\n", len(overview.Config.Publish))
 		fmt.Fprintf(&out, "bind_count\t%d\n", len(overview.Config.Binds))
 	}

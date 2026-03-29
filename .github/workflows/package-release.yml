@@ -22,6 +22,7 @@ concurrency:
 
 env:
   RELEASE_TAG: test-build
+  STAGING_TAG: test-build-staging-${{ github.run_id }}
 
 jobs:
   test:
@@ -47,19 +48,19 @@ jobs:
     needs: test
     if: github.ref_name == 'main' || github.ref_name == 'master' || (github.event_name == 'workflow_dispatch' && inputs.overwrite_fixed_release)
     steps:
-      - name: Replace fixed draft release
+      - name: Create staging draft release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release delete "${RELEASE_TAG}" --cleanup-tag --yes || true
-          gh release create "${RELEASE_TAG}" \
+          gh release delete "${STAGING_TAG}" --cleanup-tag --yes || true
+          gh release create "${STAGING_TAG}" \
             --draft \
             --target "${GITHUB_SHA}" \
-            --title "Automated Test Build" \
-            --notes "Auto-packaged from commit ${GITHUB_SHA}."
+            --title "Automated Test Build (staging)" \
+            --notes "Staging assets for commit ${GITHUB_SHA}."
 
   build-linux:
     runs-on: ubuntu-latest
@@ -105,20 +106,26 @@ jobs:
           tar -C "${DIST}" -czf "${DIST}/server-linux-amd64.tar.gz" server-linux-amd64
           tar -C "${DIST}" -czf "${DIST}/client-linux-amd64.tar.gz" client-linux-amd64
 
-      - name: Upload Linux archives to release
+      - name: Upload Linux archives to staging release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release upload "${RELEASE_TAG}" \
+          gh release upload "${STAGING_TAG}" \
             "${RUNNER_TEMP}/dist/server-linux-amd64.tar.gz" \
             "${RUNNER_TEMP}/dist/client-linux-amd64.tar.gz" \
             --clobber
 
   build-macos:
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - arm64
+          - amd64
     needs:
       - test
       - prepare-release
@@ -142,35 +149,56 @@ jobs:
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-X simple-nat-traversal/internal/buildinfo.Version=${VERSION} -X simple-nat-traversal/internal/buildinfo.Commit=${COMMIT} -X simple-nat-traversal/internal/buildinfo.BuiltAt=${BUILT_AT}"
           DIST="${RUNNER_TEMP}/dist"
-          CLIENT_DIR="${DIST}/client-macos-arm64"
-          mkdir -p "${CLIENT_DIR}"
+          BIN_DIR="${RUNNER_TEMP}/bin-macos-${{ matrix.arch }}"
+          mkdir -p "${DIST}" "${BIN_DIR}"
 
-          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${CLIENT_DIR}/snt" ./cmd/snt
-          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${CLIENT_DIR}/snt-gui" ./cmd/snt-gui
+          GOOS=darwin GOARCH=${{ matrix.arch }} go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt" ./cmd/snt
 
-          cp README.md "${CLIENT_DIR}/README.md"
-          cp docs/DEPLOYMENT.md "${CLIENT_DIR}/DEPLOYMENT.md"
-          cp docs/USER_GUIDE.md "${CLIENT_DIR}/USER_GUIDE.md"
-          cp docs/GUI_CLIENT.md "${CLIENT_DIR}/GUI_CLIENT.md"
-          cp examples/client-macos.json "${CLIENT_DIR}/client.json"
-          cp scripts/run-gui.sh "${CLIENT_DIR}/run-gui.sh"
-          chmod +x "${CLIENT_DIR}/snt" "${CLIENT_DIR}/snt-gui" "${CLIENT_DIR}/run-gui.sh"
+          if [[ "${{ matrix.arch }}" == "amd64" ]]; then
+            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+            env \
+              SDKROOT="${SDKROOT}" \
+              CGO_ENABLED=1 \
+              GOOS=darwin \
+              GOARCH=amd64 \
+              CC="clang -arch x86_64" \
+              CXX="clang++ -arch x86_64" \
+              CGO_CFLAGS="-arch x86_64" \
+              CGO_CXXFLAGS="-arch x86_64" \
+              CGO_LDFLAGS="-arch x86_64" \
+              go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt-gui" ./cmd/snt-gui
+          else
+            env CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt-gui" ./cmd/snt-gui
+          fi
 
-          tar -C "${DIST}" -czf "${DIST}/client-macos-arm64.tar.gz" client-macos-arm64
+          chmod +x "${BIN_DIR}/snt" "${BIN_DIR}/snt-gui" ./scripts/package-macos.sh
+          ./scripts/package-macos.sh "${VERSION}" "${{ matrix.arch }}" "${BIN_DIR}/snt-gui" "${BIN_DIR}/snt" "${DIST}/client-macos-${{ matrix.arch }}.dmg"
 
-      - name: Upload macOS archive to release
+      - name: Upload macOS DMG to staging release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release upload "${RELEASE_TAG}" \
-            "${RUNNER_TEMP}/dist/client-macos-arm64.tar.gz" \
+          gh release upload "${STAGING_TAG}" \
+            "${RUNNER_TEMP}/dist/client-macos-${{ matrix.arch }}.dmg" \
             --clobber
 
   build-windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            msystem: MINGW64
+            packages: mingw-w64-x86_64-gcc
+            cc: gcc
+          - arch: arm64
+            msystem: CLANGARM64
+            packages: mingw-w64-clang-aarch64-gcc
+            cc: clang
     needs:
       - test
       - prepare-release
@@ -188,51 +216,58 @@ jobs:
       - name: Setup MinGW for Fyne
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: ${{ matrix.msystem }}
           update: true
-          install: mingw-w64-x86_64-gcc
+          install: ${{ matrix.packages }}
 
-      - name: Add MinGW to PATH
+      - name: Install Inno Setup
         shell: pwsh
         run: |
-          "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          choco install innosetup --no-progress -y
 
-      - name: Build and package Windows artifacts
+      - name: Build Windows binaries
+        shell: msys2 {0}
+        env:
+          MSYSTEM: ${{ matrix.msystem }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG}"
+          COMMIT="${GITHUB_SHA::7}"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-X simple-nat-traversal/internal/buildinfo.Version=${VERSION} -X simple-nat-traversal/internal/buildinfo.Commit=${COMMIT} -X simple-nat-traversal/internal/buildinfo.BuiltAt=${BUILT_AT}"
+          RUNNER_TEMP_UNIX="$(cygpath -u "${RUNNER_TEMP}")"
+          BIN_DIR="${RUNNER_TEMP_UNIX}/bin-windows-${{ matrix.arch }}"
+          mkdir -p "${BIN_DIR}"
+
+          export CGO_ENABLED=1
+          export GOOS=windows
+          export GOARCH=${{ matrix.arch }}
+          export CC=${{ matrix.cc }}
+
+          go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt.exe" ./cmd/snt
+          go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt-gui.exe" ./cmd/snt-gui
+
+      - name: Package Windows installer
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = $env:RELEASE_TAG
-          $commit = $env:GITHUB_SHA.Substring(0, 7)
-          $builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-          $ldflags = "-X simple-nat-traversal/internal/buildinfo.Version=$version -X simple-nat-traversal/internal/buildinfo.Commit=$commit -X simple-nat-traversal/internal/buildinfo.BuiltAt=$builtAt"
           $dist = Join-Path $env:RUNNER_TEMP "dist"
-          $clientDir = Join-Path $dist "client-windows-amd64"
-          New-Item -ItemType Directory -Force -Path $clientDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          ./scripts/package-windows-installer.ps1 `
+            -Version $env:RELEASE_TAG `
+            -Arch "${{ matrix.arch }}" `
+            -GuiBinary (Join-Path $env:RUNNER_TEMP "bin-windows-${{ matrix.arch }}/snt-gui.exe") `
+            -CliBinary (Join-Path $env:RUNNER_TEMP "bin-windows-${{ matrix.arch }}/snt.exe") `
+            -OutputFile (Join-Path $dist "client-windows-${{ matrix.arch }}-setup.exe")
 
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-          go build -ldflags $ldflags -o (Join-Path $clientDir "snt.exe") ./cmd/snt
-          go build -ldflags $ldflags -o (Join-Path $clientDir "snt-gui.exe") ./cmd/snt-gui
-          Remove-Item Env:GOOS
-          Remove-Item Env:GOARCH
-
-          Copy-Item README.md (Join-Path $clientDir "README.md")
-          Copy-Item docs/DEPLOYMENT.md (Join-Path $clientDir "DEPLOYMENT.md")
-          Copy-Item docs/USER_GUIDE.md (Join-Path $clientDir "USER_GUIDE.md")
-          Copy-Item docs/GUI_CLIENT.md (Join-Path $clientDir "GUI_CLIENT.md")
-          Copy-Item examples/client-windows.json (Join-Path $clientDir "client.json")
-          Copy-Item scripts/run-gui.ps1 (Join-Path $clientDir "run-gui.ps1")
-
-          Compress-Archive -Path (Join-Path $clientDir "*") -DestinationPath (Join-Path $dist "client-windows-amd64.zip") -Force
-
-      - name: Upload Windows archive to release
+      - name: Upload Windows installer to staging release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = "Stop"
-          gh release upload $env:RELEASE_TAG (Join-Path $env:RUNNER_TEMP "dist/client-windows-amd64.zip") --clobber
+          gh release upload $env:STAGING_TAG (Join-Path $env:RUNNER_TEMP "dist/client-windows-${{ matrix.arch }}-setup.exe") --clobber
 
   publish:
     runs-on: ubuntu-latest
@@ -243,14 +278,34 @@ jobs:
       - build-windows
     if: needs.prepare-release.result == 'success'
     steps:
-      - name: Publish draft release
+      - name: Download staged release assets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release edit "${RELEASE_TAG}" \
-            --draft=false \
+          mkdir -p release-assets
+          gh release download "${STAGING_TAG}" --dir release-assets
+
+      - name: Replace fixed release from staged assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release delete "${RELEASE_TAG}" --cleanup-tag --yes || true
+          gh release create "${RELEASE_TAG}" release-assets/* \
+            --target "${GITHUB_SHA}" \
             --title "Automated Test Build" \
             --notes "Auto-packaged from commit ${GITHUB_SHA}."
+
+      - name: Remove staging release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release delete "${STAGING_TAG}" --cleanup-tag --yes || true

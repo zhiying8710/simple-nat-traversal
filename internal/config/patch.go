@@ -115,39 +115,64 @@ func (p ClientConfigPatch) Apply(cfg *ClientConfig) error {
 func parsePublishPatch(raw string) (string, PublishConfig, error) {
 	name, local, ok := strings.Cut(strings.TrimSpace(raw), "=")
 	if !ok {
-		return "", PublishConfig{}, fmt.Errorf("upsert-publish must look like name=host:port")
+		return "", PublishConfig{}, fmt.Errorf("upsert-publish must look like name=host:port or name=protocol,host:port")
 	}
 	name = strings.TrimSpace(name)
 	local = strings.TrimSpace(local)
 	if name == "" || local == "" {
-		return "", PublishConfig{}, fmt.Errorf("upsert-publish must look like name=host:port")
+		return "", PublishConfig{}, fmt.Errorf("upsert-publish must look like name=host:port or name=protocol,host:port")
 	}
-	return name, PublishConfig{Local: local}, nil
+	protocol := ServiceProtocolUDP
+	if maybeProtocol, rest, hasProtocol := strings.Cut(local, ","); hasProtocol {
+		normalized, err := NormalizeServiceProtocol(maybeProtocol)
+		if err != nil {
+			return "", PublishConfig{}, fmt.Errorf("upsert-publish protocol: %w", err)
+		}
+		protocol = normalized
+		local = strings.TrimSpace(rest)
+		if local == "" {
+			return "", PublishConfig{}, fmt.Errorf("upsert-publish must look like name=host:port or name=protocol,host:port")
+		}
+	}
+	return name, PublishConfig{Protocol: protocol, Local: local}, nil
 }
 
 func parseBindPatch(raw string) (string, BindConfig, error) {
 	name, rest, ok := strings.Cut(strings.TrimSpace(raw), "=")
 	if !ok {
-		return "", BindConfig{}, fmt.Errorf("upsert-bind must look like name=peer,service,host:port")
+		return "", BindConfig{}, fmt.Errorf("upsert-bind must look like name=peer,service,host:port or name=protocol,peer,service,host:port")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return "", BindConfig{}, fmt.Errorf("upsert-bind must look like name=peer,service,host:port")
+		return "", BindConfig{}, fmt.Errorf("upsert-bind must look like name=peer,service,host:port or name=protocol,peer,service,host:port")
 	}
 
 	parts := strings.Split(rest, ",")
-	if len(parts) != 3 {
-		return "", BindConfig{}, fmt.Errorf("upsert-bind must look like name=peer,service,host:port")
+	switch len(parts) {
+	case 3:
+		return buildBindPatch(name, ServiceProtocolUDP, parts)
+	case 4:
+		protocol, err := NormalizeServiceProtocol(parts[0])
+		if err != nil {
+			return "", BindConfig{}, fmt.Errorf("upsert-bind protocol: %w", err)
+		}
+		return buildBindPatch(name, protocol, parts[1:])
+	default:
+		return "", BindConfig{}, fmt.Errorf("upsert-bind must look like name=peer,service,host:port or name=protocol,peer,service,host:port")
 	}
+}
+
+func buildBindPatch(name, protocol string, parts []string) (string, BindConfig, error) {
 	peer := strings.TrimSpace(parts[0])
 	service := strings.TrimSpace(parts[1])
 	local := strings.TrimSpace(parts[2])
 	if peer == "" || service == "" || local == "" {
-		return "", BindConfig{}, fmt.Errorf("upsert-bind must look like name=peer,service,host:port")
+		return "", BindConfig{}, fmt.Errorf("upsert-bind must look like name=peer,service,host:port or name=protocol,peer,service,host:port")
 	}
 	return name, BindConfig{
-		Peer:    peer,
-		Service: service,
-		Local:   local,
+		Protocol: protocol,
+		Peer:     peer,
+		Service:  service,
+		Local:    local,
 	}, nil
 }

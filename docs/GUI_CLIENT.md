@@ -6,15 +6,16 @@
 
 当前实现采用：
 
-- `Fyne App + 原生窗口 + Tab UI`
+- `Fyne App + 原生窗口 + 分组 Tab UI`
 - GUI 内部直接调用已有 Go 包完成配置保存、客户端启动/停止、状态获取、网络管理、开机启动管理
 - 不再暴露 localhost HTTP API，也不再依赖浏览器作为壳
+- 支持在没有现成 `client.json` 的情况下直接启动 GUI，首次配置后再保存
 
 ## 为什么这样做
 
 - 更贴近“桌面客户端”的实际使用方式
 - 现有 `client/config/autostart/control` 包可以直接复用
-- GUI 和 CLI 使用同一份 `client.json`
+- GUI 默认使用用户配置目录下的 `client.json`，CLI 仍可显式指定同一份配置
 - 对密码、身份私钥等敏感数据的暴露面更小，不需要再把配置下发给浏览器 JS
 
 ## 当前能力
@@ -29,12 +30,16 @@
   - `allow_insecure_http`
   - `password`（留空表示保持已保存值，勾选清空才会删除）
   - `admin_password`（留空表示保持已保存值，勾选清空才会删除）
-  - `device_name`
+  - `device_name`（首次无配置时会按“系统版本 + 用户名 + 6 位随机后缀”自动生成）
   - `auto_connect`
   - `udp_listen`
   - `admin_listen`
-  - `publish`
-  - `bind`
+  - 结构化 `publish`
+  - 结构化 `bind`
+- 服务管理：
+  - 通过 GUI 表单新增/修改/删除本地 `publish`
+  - 自动发现其他在线设备发布的服务
+  - 对发现到的远端服务执行“一键 bind 到本机随机端口”
 - 运行控制：
   - 启动客户端
   - 停止客户端
@@ -50,6 +55,9 @@
   - 安装开机启动
   - 移除开机启动
   - 按 `device_name` 或 `device_id` 踢设备
+- 界面体验：
+  - 中文优先的本地化文案
+  - 按“连接 / 服务 / 网络 / 诊断”分组组织功能
 
 ## 工程结构
 
@@ -66,16 +74,17 @@
 
 ## 架构
 
-`cmd/snt-gui` 只负责启动日志、配置路径和运行时管理器，然后把窗口交给 `internal/fyneapp`。
+`cmd/snt-gui` 只负责启动日志、解析配置路径和运行时管理器，然后把窗口交给 `internal/fyneapp`。
 
 `internal/fyneapp` 负责：
 
 - 创建原生窗口
-- 维护配置表单
+- 维护连接配置、服务配置和设备管理表单
 - 调用 `RuntimeManager` 启停客户端
 - 通过 `control.LoadOverview` 聚合总览
 - 通过 `client.FetchStatus` / `FetchNetworkDevices` / `KickNetworkDevice` 展示状态和执行网络管理
 - 通过 `autostart` 包安装或移除开机启动
+- 通过在线设备服务列表生成远端服务发现和一键 bind
 
 ## auto_connect 行为
 
@@ -84,6 +93,12 @@
   - 如果 GUI 自身被设置为开机启动，那么登录后会自动建联
 - `auto_connect=false` 时：
   - GUI 只打开原生窗口，不自动连网
+
+## 分发形态
+
+- Windows 发布为安装器 `setup.exe`
+- macOS 发布为 `dmg`
+- CI 会同时构建 macOS / Windows 的多架构包，避免不同 CPU 设备无法运行
 
 ## 后续可扩展方向
 

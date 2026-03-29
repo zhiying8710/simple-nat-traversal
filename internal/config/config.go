@@ -20,6 +20,7 @@ type ServerConfig struct {
 	PublicUDPAddr string `json:"public_udp_addr"`
 	Password      string `json:"password"`
 	AdminPassword string `json:"admin_password,omitempty"`
+	LogLevel      string `json:"log_level,omitempty"`
 	StatePath     string `json:"state_path,omitempty"`
 	TLSCertFile   string `json:"tls_cert_file"`
 	TLSKeyFile    string `json:"tls_key_file"`
@@ -35,18 +36,30 @@ type ClientConfig struct {
 	AutoConnect       bool                     `json:"auto_connect"`
 	UDPListen         string                   `json:"udp_listen"`
 	AdminListen       string                   `json:"admin_listen"`
+	LogLevel          string                   `json:"log_level,omitempty"`
 	Publish           map[string]PublishConfig `json:"publish"`
 	Binds             map[string]BindConfig    `json:"binds"`
 }
 
+const (
+	ServiceProtocolUDP = "udp"
+	ServiceProtocolTCP = "tcp"
+	LogLevelDebug      = "debug"
+	LogLevelInfo       = "info"
+	LogLevelWarn       = "warn"
+	LogLevelError      = "error"
+)
+
 type PublishConfig struct {
-	Local string `json:"local"`
+	Protocol string `json:"protocol,omitempty"`
+	Local    string `json:"local"`
 }
 
 type BindConfig struct {
-	Peer    string `json:"peer"`
-	Service string `json:"service"`
-	Local   string `json:"local"`
+	Protocol string `json:"protocol,omitempty"`
+	Peer     string `json:"peer"`
+	Service  string `json:"service"`
+	Local    string `json:"local"`
 }
 
 func LoadServerConfig(path string) (ServerConfig, error) {
@@ -61,6 +74,24 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 		cfg.StatePath = defaultServerStatePath(path)
 	}
 	return cfg, nil
+}
+
+func SaveServerConfig(path string, cfg ServerConfig) error {
+	if err := normalizeServerConfig(&cfg); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	raw = append(raw, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }
 
 func LoadClientConfig(path string) (ClientConfig, error) {
@@ -105,9 +136,18 @@ func ClientDefaults() ClientConfig {
 		AutoConnect:       false,
 		UDPListen:         ":0",
 		AdminListen:       "127.0.0.1:19090",
+		LogLevel:          LogLevelInfo,
 		Publish:           map[string]PublishConfig{},
 		Binds:             map[string]BindConfig{},
 	}
+}
+
+func DefaultGUIClientConfigPath() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(configDir) == "" {
+		return "client.json"
+	}
+	return filepath.Join(configDir, "simple-nat-traversal", "client.json")
 }
 
 func normalizeServerConfig(cfg *ServerConfig) error {
@@ -123,6 +163,11 @@ func normalizeServerConfig(cfg *ServerConfig) error {
 	if cfg.Password == "" {
 		return errors.New("password is required")
 	}
+	logLevel, err := NormalizeLogLevel(cfg.LogLevel)
+	if err != nil {
+		return fmt.Errorf("log_level: %w", err)
+	}
+	cfg.LogLevel = logLevel
 	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
 		return errors.New("tls_cert_file and tls_key_file must be provided together")
 	}
@@ -168,6 +213,11 @@ func normalizeClientConfig(cfg *ClientConfig) error {
 	if err := ValidateAdminListen(cfg.AdminListen); err != nil {
 		return err
 	}
+	logLevel, err := NormalizeLogLevel(cfg.LogLevel)
+	if err != nil {
+		return fmt.Errorf("log_level: %w", err)
+	}
+	cfg.LogLevel = logLevel
 	if cfg.Publish == nil {
 		cfg.Publish = map[string]PublishConfig{}
 	}
@@ -175,11 +225,21 @@ func normalizeClientConfig(cfg *ClientConfig) error {
 		cfg.Binds = map[string]BindConfig{}
 	}
 	for name, publish := range cfg.Publish {
+		protocol, err := NormalizeServiceProtocol(publish.Protocol)
+		if err != nil {
+			return fmt.Errorf("publish.%s.protocol: %w", name, err)
+		}
 		if publish.Local == "" {
 			return fmt.Errorf("publish.%s.local is required", name)
 		}
+		publish.Protocol = protocol
+		cfg.Publish[name] = publish
 	}
 	for name, bind := range cfg.Binds {
+		protocol, err := NormalizeServiceProtocol(bind.Protocol)
+		if err != nil {
+			return fmt.Errorf("binds.%s.protocol: %w", name, err)
+		}
 		if bind.Peer == "" {
 			return fmt.Errorf("binds.%s.peer is required", name)
 		}
@@ -189,12 +249,40 @@ func normalizeClientConfig(cfg *ClientConfig) error {
 		if bind.Local == "" {
 			return fmt.Errorf("binds.%s.local is required", name)
 		}
+		bind.Protocol = protocol
+		cfg.Binds[name] = bind
 	}
 	return nil
 }
 
 func ValidateClientConfig(cfg *ClientConfig) error {
 	return normalizeClientConfig(cfg)
+}
+
+func NormalizeServiceProtocol(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", ServiceProtocolUDP:
+		return ServiceProtocolUDP, nil
+	case ServiceProtocolTCP:
+		return ServiceProtocolTCP, nil
+	default:
+		return "", fmt.Errorf("must be %q or %q", ServiceProtocolUDP, ServiceProtocolTCP)
+	}
+}
+
+func NormalizeLogLevel(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", LogLevelInfo:
+		return LogLevelInfo, nil
+	case LogLevelDebug:
+		return LogLevelDebug, nil
+	case LogLevelWarn:
+		return LogLevelWarn, nil
+	case LogLevelError:
+		return LogLevelError, nil
+	default:
+		return "", fmt.Errorf("must be %q, %q, %q or %q", LogLevelDebug, LogLevelInfo, LogLevelWarn, LogLevelError)
+	}
 }
 
 func ValidateServerURL(raw string, allowInsecureHTTP bool) (string, error) {
