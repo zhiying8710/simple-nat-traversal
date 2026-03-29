@@ -37,6 +37,8 @@ const (
 	tcpResendAfter       = 250 * time.Millisecond
 	tcpOpenTimeout       = 5 * time.Second
 	tcpCloseFlushTimeout = 5 * time.Second
+	tcpAcceptRetryMin    = 100 * time.Millisecond
+	tcpAcceptRetryMax    = 2 * time.Second
 )
 
 var joinRequestTimeout = 6 * time.Second
@@ -152,23 +154,24 @@ type bindSession struct {
 }
 
 type serviceProxy struct {
-	key       string
-	peerID    string
-	peerName  string
-	bindName  string
-	service   string
-	sessionID string
-	protocol  string
-	target    string
-	udpConn   *net.UDPConn
-	tcpConn   net.Conn
-	sender    *tcpReliableSender
-	inboundCh chan tcpFrameEvent
-	done      chan struct{}
-	lastSeen  atomic.Int64
-	closeOnce sync.Once
-	onClose   func()
-	startedAt time.Time
+	key        string
+	peerID     string
+	peerName   string
+	bindName   string
+	service    string
+	sessionID  string
+	protocol   string
+	target     string
+	udpConn    *net.UDPConn
+	tcpConn    net.Conn
+	sender     *tcpReliableSender
+	inboundCh  chan tcpFrameEvent
+	done       chan struct{}
+	closeAcked atomic.Bool
+	lastSeen   atomic.Int64
+	closeOnce  sync.Once
+	onClose    func()
+	startedAt  time.Time
 
 	mu                  sync.Mutex
 	nextSeq             uint64
@@ -978,6 +981,8 @@ func (c *Client) handleData(addr *net.UDPAddr, msg *proto.DataMessage) {
 		c.handleTCPAck(msg.FromID, payload)
 	case proto.DataKindTCPClose:
 		c.handleTCPClose(msg.FromID, payload)
+	case proto.DataKindTCPCloseAck:
+		c.handleTCPCloseAck(msg.FromID, payload)
 	default:
 		logx.Warnf("unknown service payload kind=%s from %s", payload.Kind, msg.FromID)
 	}

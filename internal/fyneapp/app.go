@@ -14,9 +14,7 @@ import (
 
 	fyne "fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"simple-nat-traversal/internal/autostart"
@@ -149,6 +147,31 @@ type App struct {
 
 	lastRefreshLabel *widget.Label
 	messageLabel     *widget.Label
+	pageTitleLabel   *widget.Label
+	pageIntroLabel   *widget.Label
+
+	sidebarStatusLabel *widget.Label
+	sidebarDeviceLabel *widget.Label
+
+	heroTitleLabel       *widget.Label
+	heroDetailLabel      *widget.Label
+	runtimeSummaryLabel  *widget.Label
+	serviceSummaryLabel  *widget.Label
+	alertSummaryLabel    *widget.Label
+	topologySummaryLabel *widget.Label
+	alertsDetailLabel    *widget.Label
+
+	dashboardPublishPreview    *widget.TextGrid
+	dashboardBindPreview       *widget.TextGrid
+	dashboardDiscoveredPreview *widget.TextGrid
+	dashboardDiscoveredAction  *widget.Button
+	eventsGrid                 *widget.TextGrid
+	logTailGrid                *widget.TextGrid
+
+	contentHost *fyne.Container
+	pages       map[string]fyne.CanvasObject
+	navButtons  map[string]*widget.Button
+	activePage  string
 
 	mu               sync.Mutex
 	refreshInFlight  bool
@@ -187,8 +210,9 @@ func New(cfg Config) (*App, error) {
 
 	locale := detectLocale()
 	fyneApp := app.NewWithID("simple-nat-traversal.gui")
+	fyneApp.Settings().SetTheme(newSNTTheme())
 	fyneApp.SetIcon(appIconResource())
-	win := fyneApp.NewWindow(translations[localeEnglish]["app_title"])
+	win := fyneApp.NewWindow(translations[locale]["app_title"])
 	win.SetIcon(appIconResource())
 	win.SetMaster()
 	win.Resize(fyne.NewSize(1360, 900))
@@ -285,324 +309,36 @@ func (a *App) requestClose() {
 }
 
 func (a *App) buildUI() {
-	a.overviewGrid = newDisplayGrid(a.t("loading"))
-	a.statusGrid = newDisplayGrid(a.t("loading"))
-	a.peersGrid = newDisplayGrid(a.t("loading"))
-	a.routesGrid = newDisplayGrid(a.t("loading"))
-	a.traceGrid = newDisplayGrid(a.t("loading"))
-	a.networkGrid = newDisplayGrid(a.t("loading"))
-	a.logsGrid = newDisplayGrid(a.t("loading"))
-	a.publishGrid = newDisplayGrid(a.t("publish_none"))
-	a.bindGrid = newDisplayGrid(a.t("bind_none"))
-	a.discoveredGrid = newDisplayGrid(a.t("discovered_none"))
-
-	a.lastRefreshLabel = widget.NewLabel(a.t("last_refresh") + ": -")
-	a.messageLabel = widget.NewLabel(a.t("ready"))
-
-	a.serverURLEntry = widget.NewEntry()
-	a.serverURLEntry.SetPlaceHolder("https://YOUR_VPS_PUBLIC_IP")
-	a.allowInsecureCheck = widget.NewCheck(a.t("allow_insecure_http"), nil)
-
-	a.passwordEntry = widget.NewPasswordEntry()
-	a.passwordEntry.SetPlaceHolder(a.t("password_saved"))
-	a.clearPasswordCheck = widget.NewCheck(a.t("clear_password"), nil)
-	a.passwordStatusLabel = widget.NewLabel(a.t("password_missing"))
-
-	a.adminPasswordEntry = widget.NewPasswordEntry()
-	a.adminPasswordEntry.SetPlaceHolder(a.t("admin_password_saved"))
-	a.clearAdminPassCheck = widget.NewCheck(a.t("clear_admin_password"), nil)
-	a.adminPassStatusLabel = widget.NewLabel(a.t("admin_password_missing"))
-
-	a.deviceNameEntry = widget.NewEntry()
-	a.deviceHintLabel = widget.NewLabel(a.t("device_name_hint"))
-	a.autoConnectCheck = widget.NewCheck(a.t("auto_connect"), nil)
-	a.udpListenEntry = widget.NewEntry()
-	a.adminListenEntry = widget.NewEntry()
-	a.logLevelSelect = widget.NewSelect([]string{
-		config.LogLevelDebug,
-		config.LogLevelInfo,
-		config.LogLevelWarn,
-		config.LogLevelError,
-	}, nil)
-	a.logLevelSelect.SetSelected(config.LogLevelInfo)
-
-	a.publishSelect = widget.NewSelect(nil, func(name string) {
-		a.loadSelectedPublish(name)
-	})
-	a.publishProtocol = newServiceProtocolSelect()
-	a.publishNameEntry = widget.NewEntry()
-	a.publishNameEntry.SetPlaceHolder(a.t("publish_placeholder_name"))
-	a.publishLocalEntry = widget.NewEntry()
-	a.publishLocalEntry.SetPlaceHolder(a.t("publish_placeholder_local"))
-
-	a.bindSelect = widget.NewSelect(nil, func(name string) {
-		a.loadSelectedBind(name)
-	})
-	a.bindProtocol = newServiceProtocolSelect()
-	a.bindNameEntry = widget.NewEntry()
-	a.bindNameEntry.SetPlaceHolder(a.t("bind_placeholder_name"))
-	a.bindPeerEntry = widget.NewEntry()
-	a.bindPeerEntry.SetPlaceHolder(a.t("bind_placeholder_peer"))
-	a.bindServiceEntry = widget.NewEntry()
-	a.bindServiceEntry.SetPlaceHolder(a.t("bind_placeholder_service"))
-	a.bindLocalEntry = widget.NewEntry()
-	a.bindLocalEntry.SetPlaceHolder(a.t("bind_placeholder_local"))
-
-	a.discoveredSelect = widget.NewSelect(nil, nil)
-
-	a.kickDeviceNameEntry = widget.NewEntry()
-	a.kickDeviceNameEntry.SetPlaceHolder(a.t("kick_target_name"))
-	a.kickDeviceIDEntry = widget.NewEntry()
-	a.kickDeviceIDEntry.SetPlaceHolder(a.t("kick_target_id"))
-
-	refreshButton := widget.NewButtonWithIcon(a.t("refresh"), theme.ViewRefreshIcon(), func() {
-		a.refreshAll()
-	})
-	reloadConfigButton := widget.NewButtonWithIcon(a.t("reload_config"), theme.ViewRefreshIcon(), func() {
-		a.loadConfigIntoForm()
-	})
-	saveConfigButton := widget.NewButtonWithIcon(a.t("save_config"), theme.DocumentSaveIcon(), func() {
-		if err := a.saveConfig(); err != nil {
-			a.showError(err)
-		}
-	})
-	startButton := widget.NewButtonWithIcon(a.t("start_client"), theme.MediaPlayIcon(), func() {
-		if err := a.startClient(); err != nil {
-			a.showError(err)
-		}
-	})
-	stopButton := widget.NewButtonWithIcon(a.t("stop_client"), theme.MediaStopIcon(), func() {
-		if err := a.stopClient(); err != nil {
-			a.showError(err)
-		}
-	})
-	installAutostartButton := widget.NewButtonWithIcon(a.t("install_autostart"), theme.DownloadIcon(), func() {
-		if err := a.installAutostart(); err != nil {
-			a.showError(err)
-		}
-	})
-	uninstallAutostartButton := widget.NewButtonWithIcon(a.t("remove_autostart"), theme.DeleteIcon(), func() {
-		if err := a.uninstallAutostart(); err != nil {
-			a.showError(err)
-		}
-	})
-	applyLogLevelButton := widget.NewButton(a.t("apply_log_level"), func() {
-		if err := a.applyLogLevel(); err != nil {
-			a.showError(err)
-		}
-	})
-
-	publishActions := container.NewHBox(
-		widget.NewButton(a.t("add_or_update"), func() {
-			if err := a.upsertPublish(); err != nil {
-				a.showError(err)
-			}
-		}),
-		widget.NewButton(a.t("delete_selected"), func() {
-			if err := a.deleteSelectedPublish(); err != nil {
-				a.showError(err)
-			}
-		}),
-		widget.NewButton(a.t("load_selected"), func() {
-			a.loadSelectedPublish(a.publishSelect.Selected)
-		}),
-	)
-
-	bindActions := container.NewHBox(
-		widget.NewButton(a.t("add_or_update"), func() {
-			if err := a.upsertBind(); err != nil {
-				a.showError(err)
-			}
-		}),
-		widget.NewButton(a.t("delete_selected"), func() {
-			if err := a.deleteSelectedBind(); err != nil {
-				a.showError(err)
-			}
-		}),
-		widget.NewButton(a.t("load_selected"), func() {
-			a.loadSelectedBind(a.bindSelect.Selected)
-		}),
-	)
-
-	quickBindButton := widget.NewButtonWithIcon(a.t("quick_bind"), theme.ContentAddIcon(), func() {
-		if err := a.quickBindDiscoveredService(); err != nil {
-			a.showError(err)
-		}
-	})
-
-	kickByNameButton := widget.NewButtonWithIcon(a.t("kick_by_name"), theme.CancelIcon(), func() {
-		if err := a.kickDevice(proto.KickDeviceRequest{DeviceName: strings.TrimSpace(a.kickDeviceNameEntry.Text)}); err != nil {
-			a.showError(err)
-		}
-	})
-	kickByIDButton := widget.NewButtonWithIcon(a.t("kick_by_id"), theme.CancelIcon(), func() {
-		if err := a.kickDevice(proto.KickDeviceRequest{DeviceID: strings.TrimSpace(a.kickDeviceIDEntry.Text)}); err != nil {
-			a.showError(err)
-		}
-	})
-
-	connectionCard := widget.NewCard(
-		a.t("section_connection"),
-		"",
-		widget.NewForm(
-			widget.NewFormItem(a.t("server_url"), a.serverURLEntry),
-			widget.NewFormItem("", a.allowInsecureCheck),
-			widget.NewFormItem(a.t("device_name"), a.deviceNameEntry),
-			widget.NewFormItem("", a.deviceHintLabel),
-			widget.NewFormItem("", a.autoConnectCheck),
-			widget.NewFormItem(a.t("udp_listen"), a.udpListenEntry),
-			widget.NewFormItem(a.t("admin_listen"), a.adminListenEntry),
-		),
-	)
-	connectionCard.SetSubTitle("")
-
-	credentialsCard := widget.NewCard(
-		a.t("section_credentials"),
-		"",
-		widget.NewForm(
-			widget.NewFormItem(a.t("password"), a.passwordEntry),
-			widget.NewFormItem("", a.clearPasswordCheck),
-			widget.NewFormItem("", a.passwordStatusLabel),
-			widget.NewFormItem(a.t("admin_password"), a.adminPasswordEntry),
-			widget.NewFormItem("", a.clearAdminPassCheck),
-			widget.NewFormItem("", a.adminPassStatusLabel),
-		),
-	)
-
-	runtimeCard := widget.NewCard(
-		a.t("section_runtime"),
-		"",
-		container.NewVBox(
-			container.NewHBox(
-				refreshButton,
-				reloadConfigButton,
-				saveConfigButton,
-				startButton,
-				stopButton,
-			),
-			container.NewHBox(
-				installAutostartButton,
-				uninstallAutostartButton,
-			),
-			widget.NewForm(
-				widget.NewFormItem(a.t("log_level"), a.logLevelSelect),
-			),
-			applyLogLevelButton,
-		),
-	)
-
-	publishCard := widget.NewCard(
-		a.t("section_publish"),
-		"",
-		container.NewVBox(
-			widget.NewLabel(a.t("publish_list")),
-			a.publishGrid,
-			container.NewGridWithColumns(2, a.publishSelect, widget.NewLabel("")),
-			widget.NewForm(
-				widget.NewFormItem(a.t("service_protocol"), a.publishProtocol),
-				widget.NewFormItem(a.t("publish_name"), a.publishNameEntry),
-				widget.NewFormItem(a.t("publish_local"), a.publishLocalEntry),
-			),
-			publishActions,
-		),
-	)
-
-	discoveredCard := widget.NewCard(
-		a.t("section_discovered"),
-		a.t("auto_bind_note"),
-		container.NewVBox(
-			a.discoveredGrid,
-			a.discoveredSelect,
-			quickBindButton,
-		),
-	)
-
-	bindCard := widget.NewCard(
-		a.t("section_bind"),
-		"",
-		container.NewVBox(
-			widget.NewLabel(a.t("bind_list")),
-			a.bindGrid,
-			container.NewGridWithColumns(2, a.bindSelect, widget.NewLabel("")),
-			widget.NewForm(
-				widget.NewFormItem(a.t("service_protocol"), a.bindProtocol),
-				widget.NewFormItem(a.t("bind_name"), a.bindNameEntry),
-				widget.NewFormItem(a.t("bind_peer"), a.bindPeerEntry),
-				widget.NewFormItem(a.t("bind_service"), a.bindServiceEntry),
-				widget.NewFormItem(a.t("bind_local"), a.bindLocalEntry),
-			),
-			bindActions,
-		),
-	)
-
-	connectionTab := container.NewScroll(container.NewVBox(
-		connectionCard,
-		credentialsCard,
-		runtimeCard,
-	))
-
-	servicesTab := container.NewScroll(container.NewVBox(
-		publishCard,
-		discoveredCard,
-		bindCard,
-	))
-
-	networkTab := container.NewScroll(container.NewVBox(
-		widget.NewCard(
-			a.t("section_network_devices"),
-			"",
-			a.networkGrid,
-		),
-		widget.NewCard(
-			a.t("section_kick"),
-			"",
-			container.NewVBox(
-				container.NewHBox(a.kickDeviceNameEntry, kickByNameButton),
-				container.NewHBox(a.kickDeviceIDEntry, kickByIDButton),
-			),
-		),
-	))
-
-	diagnosticsTabs := container.NewAppTabs(
-		container.NewTabItem(a.t("tab_status"), container.NewBorder(widget.NewLabel(a.t("raw_status")), nil, nil, nil, a.statusGrid)),
-		container.NewTabItem(a.t("tab_peers"), a.peersGrid),
-		container.NewTabItem(a.t("tab_routes"), a.routesGrid),
-		container.NewTabItem(a.t("tab_trace"), a.traceGrid),
-		container.NewTabItem(a.t("tab_logs"), a.logsGrid),
-	)
-
-	topBar := container.NewVBox(
-		widget.NewLabelWithStyle(a.t("app_title"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel(a.t("app_subtitle")),
-		container.NewHBox(
-			widget.NewLabel(a.t("config_path")+": "+a.cfg.ConfigPath),
-			widget.NewSeparator(),
-			a.lastRefreshLabel,
-		),
-		a.messageLabel,
-	)
-
-	tabs := container.NewAppTabs(
-		container.NewTabItem(a.t("tab_overview"), a.overviewGrid),
-		container.NewTabItem(a.t("tab_connection"), connectionTab),
-		container.NewTabItem(a.t("tab_services"), servicesTab),
-		container.NewTabItem(a.t("tab_network"), networkTab),
-		container.NewTabItem(a.t("tab_diagnostics"), diagnosticsTabs),
-	)
-
-	a.window.SetContent(container.NewBorder(topBar, nil, nil, nil, tabs))
+	if a.app != nil {
+		a.app.Settings().SetTheme(newSNTTheme())
+	}
+	a.initWidgets()
+	a.window.SetContent(a.buildShell())
+	a.switchPage(pageDashboard)
 }
 
 func (a *App) loadConfigIntoForm() {
+	_ = a.loadConfigIntoFormResult()
+}
+
+func (a *App) loadConfigIntoFormResult() bool {
 	cfg, exists, err := loadConfigOrDefault(a.cfg.ConfigPath, a.defaultDeviceName)
 	if err != nil {
 		a.showError(err)
-		return
+		return false
 	}
 	a.fillConfigForm(cfg, exists)
 	if !exists {
 		a.setMessage(a.t("config_missing"))
 	}
+	return true
+}
+
+func (a *App) reloadConfig() {
+	if !a.loadConfigIntoFormResult() {
+		return
+	}
+	a.triggerRefresh()
 }
 
 func (a *App) fillConfigForm(cfg config.ClientConfig, exists bool) {
@@ -651,7 +387,10 @@ func (a *App) saveConfig() error {
 		return err
 	}
 	a.setMessage(a.t("config_saved"))
-	a.loadConfigIntoForm()
+	if !a.loadConfigIntoFormResult() {
+		return nil
+	}
+	a.triggerRefresh()
 	return nil
 }
 
@@ -683,7 +422,7 @@ func (a *App) applyLogLevel() error {
 		a.loadConfigIntoForm()
 		a.triggerRefresh()
 		if err != nil {
-			return fmt.Errorf("log level saved to config but failed to update running client: %w", err)
+			return fmt.Errorf(a.t("error_runtime_log_level_apply"), err)
 		}
 		a.setMessage(fmt.Sprintf("%s: %s", a.t("log_level_applied"), resp.LogLevel))
 		return nil
@@ -798,10 +537,10 @@ func (a *App) draftConfigFromFormWithServices(publish map[string]config.PublishC
 	}
 
 	if a.clearPasswordCheck.Checked && strings.TrimSpace(a.passwordEntry.Text) != "" {
-		return config.ClientConfig{}, errors.New("password cannot be replaced and cleared at the same time")
+		return config.ClientConfig{}, errors.New(a.t("error_password_conflict"))
 	}
 	if a.clearAdminPassCheck.Checked && strings.TrimSpace(a.adminPasswordEntry.Text) != "" {
-		return config.ClientConfig{}, errors.New("admin_password cannot be replaced and cleared at the same time")
+		return config.ClientConfig{}, errors.New(a.t("error_admin_password_conflict"))
 	}
 
 	cfg.ServerURL = strings.TrimSpace(a.serverURLEntry.Text)
@@ -835,7 +574,7 @@ func (a *App) upsertPublish() error {
 	name := sanitizeConfigKey(a.publishNameEntry.Text)
 	local := strings.TrimSpace(a.publishLocalEntry.Text)
 	if name == "" || local == "" {
-		return errors.New("publish name and local address are required")
+		return errors.New(a.t("error_publish_required"))
 	}
 	protocol, err := selectedServiceProtocol(a.publishProtocol)
 	if err != nil {
@@ -855,7 +594,7 @@ func (a *App) upsertPublish() error {
 func (a *App) deleteSelectedPublish() error {
 	name := strings.TrimSpace(a.publishSelect.Selected)
 	if name == "" {
-		return errors.New("select a publish item first")
+		return errors.New(a.t("error_select_publish"))
 	}
 	a.mu.Lock()
 	publish := clonePublishMap(a.draftPublish)
@@ -886,7 +625,7 @@ func (a *App) upsertBind() error {
 	service := strings.TrimSpace(a.bindServiceEntry.Text)
 	local := strings.TrimSpace(a.bindLocalEntry.Text)
 	if name == "" || peer == "" || service == "" || local == "" {
-		return errors.New("bind name, peer, service and local address are required")
+		return errors.New(a.t("error_bind_required"))
 	}
 	protocol, err := selectedServiceProtocol(a.bindProtocol)
 	if err != nil {
@@ -908,7 +647,7 @@ func (a *App) upsertBind() error {
 func (a *App) deleteSelectedBind() error {
 	name := strings.TrimSpace(a.bindSelect.Selected)
 	if name == "" {
-		return errors.New("select a bind item first")
+		return errors.New(a.t("error_select_bind"))
 	}
 	a.mu.Lock()
 	publish := clonePublishMap(a.draftPublish)
@@ -938,11 +677,11 @@ func (a *App) loadSelectedBind(name string) {
 func (a *App) quickBindDiscoveredService() error {
 	selected := strings.TrimSpace(a.discoveredSelect.Selected)
 	if selected == "" {
-		return errors.New("select a discovered service first")
+		return errors.New(a.t("error_select_discovered"))
 	}
 	service, ok := a.discoveredServiceByLabel(selected)
 	if !ok {
-		return errors.New("selected discovered service is no longer available")
+		return errors.New(a.t("error_discovered_missing"))
 	}
 
 	a.mu.Lock()
@@ -1012,7 +751,7 @@ func (a *App) kickDevice(req proto.KickDeviceRequest) error {
 	if err != nil {
 		return err
 	}
-	a.setMessage(fmt.Sprintf("Kicked %s (%s)", resp.DeviceName, resp.DeviceID))
+	a.setMessage(fmt.Sprintf(a.t("kick_success"), resp.DeviceName, resp.DeviceID))
 	a.kickDeviceNameEntry.SetText("")
 	a.kickDeviceIDEntry.SetText("")
 	a.triggerRefresh()
@@ -1065,14 +804,14 @@ func (a *App) refreshAll() {
 		}
 
 		runtimeStatus := a.cfg.RuntimeManager.Snapshot()
-		statusText := mustPrettyJSON(runtimeStatus)
+		statusText := a.mustPrettyJSON(runtimeStatus)
 		if overview.Status != nil {
-			statusText = joinSections(statusText, mustPrettyJSON(overview.Status))
+			statusText = joinSections(statusText, a.mustPrettyJSON(overview.Status))
 		}
-		peersText := textOrMessageFromStatus(overview.Status, overview.StatusError, client.RenderPeersStatus)
-		routesText := textOrMessageFromStatus(overview.Status, overview.StatusError, client.RenderRoutesStatus)
-		traceText := textOrMessageFromStatus(overview.Status, overview.StatusError, client.RenderTraceStatus)
-		networkText := textOrMessageFromNetwork(overview.Network, overview.NetworkError)
+		peersText := a.textOrMessageFromStatus(overview.Status, overview.StatusError, a.renderPeersStatus)
+		routesText := a.textOrMessageFromStatus(overview.Status, overview.StatusError, a.renderRoutesStatus)
+		traceText := a.textOrMessageFromStatus(overview.Status, overview.StatusError, a.renderTraceStatus)
+		networkText := a.textOrMessageFromNetwork(overview.Network, overview.NetworkError, a.renderNetworkDevicesStatus)
 		logsText := strings.Join(a.cfg.Logs.Snapshot(), "\n")
 		if strings.TrimSpace(logsText) == "" {
 			logsText = a.t("logs_none")
@@ -1085,7 +824,7 @@ func (a *App) refreshAll() {
 			a.currentOverview = &overview
 			a.discovered = discovered
 			a.mu.Unlock()
-			a.overviewGrid.SetText(control.RenderOverview(overview))
+			a.overviewGrid.SetText(a.renderOverview(overview))
 			a.statusGrid.SetText(statusText)
 			a.peersGrid.SetText(peersText)
 			a.routesGrid.SetText(routesText)
@@ -1094,6 +833,7 @@ func (a *App) refreshAll() {
 			a.logsGrid.SetText(logsText)
 			a.logsGrid.ScrollToBottom()
 			a.updateServiceViews()
+			a.updateShellSummary(overview, runtimeStatus, logsText)
 			a.lastRefreshLabel.SetText(a.t("last_refresh") + ": " + time.Now().Format(time.RFC3339))
 			a.setMessage(a.t("refreshed"))
 			if a.refreshDoneHook != nil {
@@ -1110,9 +850,18 @@ func (a *App) updateServiceViews() {
 	discovered := append([]discoveredService(nil), a.discovered...)
 	a.mu.Unlock()
 
-	a.publishGrid.SetText(renderPublishConfigs(publish, a.t("publish_none")))
-	a.bindGrid.SetText(renderBindConfigs(binds, a.t("bind_none")))
-	a.discoveredGrid.SetText(renderDiscoveredServices(discovered, a.t("discovered_none")))
+	a.publishGrid.SetText(a.renderPublishConfigs(publish, a.t("publish_none")))
+	a.bindGrid.SetText(a.renderBindConfigs(binds, a.t("bind_none")))
+	a.discoveredGrid.SetText(a.renderDiscoveredServices(discovered, a.t("discovered_none")))
+	if a.dashboardPublishPreview != nil {
+		a.dashboardPublishPreview.SetText(a.renderPublishConfigs(publish, a.t("publish_none")))
+	}
+	if a.dashboardBindPreview != nil {
+		a.dashboardBindPreview.SetText(a.renderBindConfigs(binds, a.t("bind_none")))
+	}
+	if a.dashboardDiscoveredPreview != nil {
+		a.dashboardDiscoveredPreview.SetText(a.renderDiscoveredServices(discovered, a.t("discovered_none")))
+	}
 
 	setSelectOptions(a.publishSelect, sortedPublishNames(publish))
 	setSelectOptions(a.bindSelect, sortedBindNames(binds))
@@ -1141,8 +890,9 @@ func (a *App) setMessage(message string) {
 }
 
 func (a *App) showError(err error) {
-	a.setMessage(err.Error())
-	dialog.ShowError(err, a.window)
+	localized := a.localizeErrorText(err.Error())
+	a.setMessage(localized)
+	dialog.ShowError(errors.New(localized), a.window)
 }
 
 func newDisplayGrid(initial string) *widget.TextGrid {

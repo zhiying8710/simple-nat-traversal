@@ -29,6 +29,7 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 
 cp "${GUI_BIN}" "${MACOS_DIR}/snt-gui"
 chmod +x "${MACOS_DIR}/snt-gui"
+cp "${ROOT_DIR}/internal/fyneapp/assets/app_icon.icns" "${RESOURCES_DIR}/app_icon.icns"
 
 cat > "${CONTENTS_DIR}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -41,6 +42,8 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
   <string>Simple NAT Traversal</string>
   <key>CFBundleExecutable</key>
   <string>snt-gui</string>
+  <key>CFBundleIconFile</key>
+  <string>app_icon.icns</string>
   <key>CFBundleIdentifier</key>
   <string>io.github.zhiying8710.simple-nat-traversal</string>
   <key>CFBundleInfoDictionaryVersion</key>

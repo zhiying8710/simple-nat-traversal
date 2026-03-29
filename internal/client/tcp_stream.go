@@ -262,25 +262,35 @@ func tcpReadChunks(conn net.Conn, handle func([]byte) error) error {
 	}
 }
 
-func waitTCPSenderDrain(done <-chan struct{}, sender *tcpReliableSender, timeout time.Duration) (drained bool, closed bool) {
-	if sender == nil || sender.pendingCount() == 0 {
-		return true, false
+func waitTCPCloseHandshake(done <-chan struct{}, sender *tcpReliableSender, closeAcked func() bool, sendClose func() error, timeout time.Duration) (drained bool, acked bool, closed bool) {
+	if closeAcked == nil {
+		closeAcked = func() bool { return true }
 	}
-	ticker := time.NewTicker(20 * time.Millisecond)
+	if sendClose != nil {
+		_ = sendClose()
+	}
+	ticker := time.NewTicker(tcpResendAfter)
 	defer ticker.Stop()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	for {
-		if sender.pendingCount() == 0 {
-			return true, false
+		drained = sender == nil || sender.pendingCount() == 0
+		acked = closeAcked()
+		if drained && acked {
+			return drained, acked, false
 		}
 		select {
 		case <-done:
-			return false, true
+			return drained, acked, true
 		case <-ticker.C:
+			if !acked && sendClose != nil {
+				_ = sendClose()
+			}
 		case <-timer.C:
-			return sender.pendingCount() == 0, false
+			drained = sender == nil || sender.pendingCount() == 0
+			acked = closeAcked()
+			return drained, acked, false
 		}
 	}
 }

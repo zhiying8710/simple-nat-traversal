@@ -67,7 +67,11 @@ func TestFailTCPBindOpenNotifiesPeer(t *testing.T) {
 	}
 
 	openErr := errors.New("tcp open timed out")
-	c.failTCPBindOpen(stream, openErr)
+	doneCh := make(chan struct{})
+	go func() {
+		c.failTCPBindOpen(stream, openErr)
+		close(doneCh)
+	}()
 
 	buf := make([]byte, maxDatagramSize)
 	n, _, err := peerUDP.ReadFromUDP(buf)
@@ -98,6 +102,14 @@ func TestFailTCPBindOpenNotifiesPeer(t *testing.T) {
 	}
 	if payload.Error != openErr.Error() {
 		t.Fatalf("unexpected close payload error: %q", payload.Error)
+	}
+
+	stream.closeAcked.Store(true)
+
+	select {
+	case <-doneCh:
+	case <-time.After(time.Second):
+		t.Fatal("expected failTCPBindOpen to finish after close ack")
 	}
 }
 
@@ -200,9 +212,32 @@ func TestCloseTCPBindOutboundWaitsForAckAndSendsFinalSeq(t *testing.T) {
 		t.Fatalf("expected tcp close final seq 1, got %d", payload.Ack)
 	}
 
+	if err := peerUDP.SetReadDeadline(time.Now().Add(2 * tcpResendAfter)); err != nil {
+		t.Fatalf("set resend read deadline: %v", err)
+	}
+	n, _, err = peerUDP.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read retransmitted close datagram: %v", err)
+	}
+	env, err = proto.UnmarshalEnvelope(buf[:n])
+	if err != nil {
+		t.Fatalf("unmarshal retransmit envelope: %v", err)
+	}
+	plaintext, err = secure.DecryptPacket(sessionKey, env.Data.Seq, env.Data.Ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt retransmit payload: %v", err)
+	}
+	payload, err = proto.UnmarshalServicePayload(plaintext)
+	if err != nil {
+		t.Fatalf("unmarshal retransmit service payload: %v", err)
+	}
+	if payload.Kind != proto.DataKindTCPClose {
+		t.Fatalf("expected retransmitted tcp close payload, got %s", payload.Kind)
+	}
+
 	select {
 	case <-doneCh:
-		t.Fatal("expected close path to wait for outbound ack")
+		t.Fatal("expected close path to wait for outbound ack and close ack")
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -210,8 +245,16 @@ func TestCloseTCPBindOutboundWaitsForAckAndSendsFinalSeq(t *testing.T) {
 
 	select {
 	case <-doneCh:
+		t.Fatal("expected close path to wait for close ack after outbound ack")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	stream.closeAcked.Store(true)
+
+	select {
+	case <-doneCh:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected close path to finish after ack")
+		t.Fatal("expected close path to finish after close ack")
 	}
 }
 
@@ -374,4 +417,183 @@ func TestOpenTCPStreamStopsRetryWhenStreamClosed(t *testing.T) {
 	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
 		t.Fatalf("expected read timeout after stream close, got %v", err)
 	}
+}
+
+func TestOpenTCPResultAfterCloseReturnsSuccessWhenOpenCompleted(t *testing.T) {
+	t.Parallel()
+
+	stream := &tcpBindStream{
+		openResult: make(chan error, 1),
+	}
+	stream.resolveOpen(nil)
+
+	if err := openTCPResultAfterClose(stream); err != nil {
+		t.Fatalf("expected successful open result, got %v", err)
+	}
+
+	stream.mu.Lock()
+	openReady := stream.openReady
+	stream.mu.Unlock()
+	if !openReady {
+		t.Fatal("expected stream to be marked open after successful open result")
+	}
+}
+
+func TestHandleTCPCloseAcknowledgesUnknownSession(t *testing.T) {
+	t.Parallel()
+
+	localUDP, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen local udp: %v", err)
+	}
+	defer localUDP.Close()
+
+	peerUDP, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen peer udp: %v", err)
+	}
+	defer peerUDP.Close()
+	if err := peerUDP.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+
+	sessionKey := make([]byte, 32)
+	for i := range sessionKey {
+		sessionKey[i] = byte(i + 1)
+	}
+
+	c := &Client{
+		cfg:      config.ClientConfig{DeviceName: "mac-a"},
+		deviceID: "dev-local",
+		udpConn:  localUDP,
+		peers: map[string]*peerState{
+			"peer-1": {
+				info: proto.PeerInfo{
+					DeviceID:   "peer-1",
+					DeviceName: "win-b",
+				},
+				session: &sessionState{
+					key:  sessionKey,
+					seen: map[uint64]struct{}{},
+				},
+				chosenAddr: cloneUDPAddr(peerUDP.LocalAddr().(*net.UDPAddr)),
+			},
+		},
+	}
+
+	c.handleTCPClose("peer-1", proto.ServicePayload{
+		Protocol:  config.ServiceProtocolTCP,
+		BindName:  "win-rdp",
+		Service:   "rdp",
+		SessionID: "already-closed",
+		Ack:       7,
+	})
+
+	buf := make([]byte, maxDatagramSize)
+	n, _, err := peerUDP.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read udp datagram: %v", err)
+	}
+	env, err := proto.UnmarshalEnvelope(buf[:n])
+	if err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	plaintext, err := secure.DecryptPacket(sessionKey, env.Data.Seq, env.Data.Ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt payload: %v", err)
+	}
+	payload, err := proto.UnmarshalServicePayload(plaintext)
+	if err != nil {
+		t.Fatalf("unmarshal service payload: %v", err)
+	}
+	if payload.Kind != proto.DataKindTCPCloseAck {
+		t.Fatalf("expected tcp close ack payload, got %s", payload.Kind)
+	}
+	if payload.BindName != "win-rdp" || payload.Service != "rdp" || payload.SessionID != "already-closed" {
+		t.Fatalf("unexpected close ack identity: %+v", payload)
+	}
+	if payload.Ack != 7 {
+		t.Fatalf("unexpected close ack final seq: %d", payload.Ack)
+	}
+}
+
+func TestRunTCPBindRetriesAcceptErrors(t *testing.T) {
+	t.Parallel()
+
+	listener := &scriptedListener{
+		results: []scriptedAcceptResult{
+			{err: temporaryAcceptError{}},
+			{err: net.ErrClosed},
+		},
+	}
+
+	doneCh := make(chan struct{})
+	go func() {
+		(&Client{}).runTCPBind(&bindProxy{
+			name: "win-rdp",
+			tcp:  listener,
+		})
+		close(doneCh)
+	}()
+
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected accept loop to retry and stop after listener close")
+	}
+
+	if listener.calls != len(listener.results) {
+		t.Fatalf("expected %d accept calls, got %d", len(listener.results), listener.calls)
+	}
+}
+
+type scriptedAcceptResult struct {
+	conn net.Conn
+	err  error
+}
+
+type scriptedListener struct {
+	results []scriptedAcceptResult
+	calls   int
+}
+
+func (l *scriptedListener) Accept() (net.Conn, error) {
+	if l.calls >= len(l.results) {
+		return nil, net.ErrClosed
+	}
+	result := l.results[l.calls]
+	l.calls++
+	return result.conn, result.err
+}
+
+func (l *scriptedListener) Close() error {
+	return nil
+}
+
+func (l *scriptedListener) Addr() net.Addr {
+	return testAddr("tcp")
+}
+
+type temporaryAcceptError struct{}
+
+func (temporaryAcceptError) Error() string {
+	return "temporary accept failure"
+}
+
+func (temporaryAcceptError) Timeout() bool {
+	return false
+}
+
+func (temporaryAcceptError) Temporary() bool {
+	return true
+}
+
+type testAddr string
+
+func (a testAddr) Network() string {
+	return string(a)
+}
+
+func (a testAddr) String() string {
+	return string(a)
 }

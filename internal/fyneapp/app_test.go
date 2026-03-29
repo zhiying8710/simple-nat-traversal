@@ -2,6 +2,7 @@ package fyneapp
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,6 +62,248 @@ func waitForSignal(t *testing.T, ch <-chan struct{}, label string) {
 	case <-ch:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func TestBuildUIDefaultsToDashboardShell(t *testing.T) {
+	app := newTestApp(t, Config{})
+
+	if app.activePage != pageDashboard {
+		t.Fatalf("activePage = %q, want %q", app.activePage, pageDashboard)
+	}
+	if got := app.pageTitleLabel.Text; got != app.t("tab_overview") {
+		t.Fatalf("pageTitleLabel = %q, want %q", got, app.t("tab_overview"))
+	}
+	if app.dashboardPublishPreview == nil || app.logTailGrid == nil || app.navButtons[pageServices] == nil {
+		t.Fatal("expected dashboard shell widgets to be initialized")
+	}
+}
+
+func TestDashboardDiscoveredActionRoutesToServicesPage(t *testing.T) {
+	app := newTestApp(t, Config{})
+
+	if app.dashboardDiscoveredAction == nil {
+		t.Fatal("expected discovered dashboard action button to be initialized")
+	}
+
+	app.dashboardDiscoveredAction.OnTapped()
+
+	if app.activePage != pageServices {
+		t.Fatalf("activePage = %q, want %q", app.activePage, pageServices)
+	}
+	if got := app.pageTitleLabel.Text; got != app.t("tab_services") {
+		t.Fatalf("pageTitleLabel = %q, want %q", got, app.t("tab_services"))
+	}
+}
+
+func TestHeroContentTreatsStoppedRuntimeAsIdle(t *testing.T) {
+	app := newTestApp(t, Config{})
+
+	overview := control.Overview{
+		ConfigValid:   true,
+		StatusError:   "status endpoint returned 503",
+		NetworkError:  "server admin request failed",
+		ClientRunning: false,
+		Config: &control.OverviewConfig{
+			ServerURL:  "https://example.com",
+			DeviceName: "macbook-air",
+		},
+	}
+
+	title, detail := app.heroContent(overview, control.RuntimeStatus{State: "stopped"})
+	if title != app.t("hero_idle_title") {
+		t.Fatalf("hero title = %q, want %q", title, app.t("hero_idle_title"))
+	}
+	if !strings.Contains(detail, "https://example.com") {
+		t.Fatalf("hero detail should keep idle config context, got %q", detail)
+	}
+
+	alertSummary := app.renderAlertSummary(overview, control.RuntimeStatus{State: "stopped"})
+	if alertSummary != app.t("dashboard_alerts_clear") {
+		t.Fatalf("alert summary = %q, want %q", alertSummary, app.t("dashboard_alerts_clear"))
+	}
+}
+
+func TestRenderRuntimeSummarySuppressesStoppedFetchErrors(t *testing.T) {
+	app := newTestApp(t, Config{})
+
+	rendered := app.renderRuntimeSummary(control.Overview{
+		StatusError: "status endpoint returned 503",
+	}, control.RuntimeStatus{State: "stopped"})
+
+	if !strings.Contains(rendered, app.t("runtime_state")+": "+app.t("runtime_state_stopped")) {
+		t.Fatalf("renderRuntimeSummary should keep stopped state, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "status endpoint returned 503") {
+		t.Fatalf("renderRuntimeSummary should suppress expected stopped-state fetch errors, got:\n%s", rendered)
+	}
+}
+
+func TestRenderServiceSummaryCountsNetworkDiscoveryWithoutStatus(t *testing.T) {
+	app := newTestApp(t, Config{})
+
+	overview := control.Overview{
+		Config: &control.OverviewConfig{
+			DeviceName: "macbook-air",
+		},
+		Network: &proto.NetworkDevicesResponse{
+			Devices: []proto.NetworkDeviceStatus{{
+				DeviceID:   "peer-1",
+				DeviceName: "winpc",
+				ServiceDetails: []proto.ServiceInfo{{
+					Name:     "rdp",
+					Protocol: config.ServiceProtocolTCP,
+				}},
+			}},
+		},
+	}
+
+	rendered := app.renderServiceSummary(overview)
+	want := app.t("dashboard_discovered_count") + ": 1"
+	if !strings.Contains(rendered, want) {
+		t.Fatalf("renderServiceSummary missing %q:\n%s", want, rendered)
+	}
+}
+
+func TestRenderTopologySummaryFallsBackToConfiguredDeviceName(t *testing.T) {
+	app := newTestApp(t, Config{})
+
+	overview := control.Overview{
+		Config: &control.OverviewConfig{
+			DeviceName: "macbook-air",
+		},
+	}
+
+	rendered := app.renderTopologySummary(overview)
+	want := app.t("device_name") + ": macbook-air"
+	if !strings.Contains(rendered, want) {
+		t.Fatalf("renderTopologySummary missing %q:\n%s", want, rendered)
+	}
+}
+
+func TestShellIdentitySummariesUseLocalizedDeviceIDLabel(t *testing.T) {
+	app := newTestApp(t, Config{})
+	app.locale = localeChinese
+
+	overview := control.Overview{
+		Status: &client.StatusSnapshot{
+			DeviceName: "macbook-air",
+			DeviceID:   "dev-123",
+		},
+	}
+
+	app.updateShellSummary(overview, control.RuntimeStatus{State: "running"}, "")
+
+	wantLabel := app.t("table_device_id") + ": dev-123"
+	if !strings.Contains(app.sidebarDeviceLabel.Text, wantLabel) {
+		t.Fatalf("sidebarDeviceLabel missing %q:\n%s", wantLabel, app.sidebarDeviceLabel.Text)
+	}
+	if strings.Contains(app.sidebarDeviceLabel.Text, "\nID: ") {
+		t.Fatalf("sidebarDeviceLabel should not contain hardcoded ID label:\n%s", app.sidebarDeviceLabel.Text)
+	}
+
+	topology := app.renderTopologySummary(overview)
+	if !strings.Contains(topology, wantLabel) {
+		t.Fatalf("renderTopologySummary missing %q:\n%s", wantLabel, topology)
+	}
+	if strings.Contains(topology, "\nID: ") {
+		t.Fatalf("renderTopologySummary should not contain hardcoded ID label:\n%s", topology)
+	}
+}
+
+func TestReloadConfigTriggersRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	cfg := config.ClientDefaults()
+	cfg.ServerURL = "https://example.com"
+	cfg.Password = "test-password"
+	cfg.DeviceName = "reloaded-device"
+	if err := config.SaveClientConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+	refreshCalled := make(chan struct{}, 1)
+	app.refreshHook = func() {
+		select {
+		case refreshCalled <- struct{}{}:
+		default:
+		}
+	}
+
+	app.reloadConfig()
+	waitForSignal(t, refreshCalled, "reload refresh")
+
+	if got := app.serverURLEntry.Text; got != cfg.ServerURL {
+		t.Fatalf("serverURLEntry = %q, want %q", got, cfg.ServerURL)
+	}
+	if got := app.deviceNameEntry.Text; got != cfg.DeviceName {
+		t.Fatalf("deviceNameEntry = %q, want %q", got, cfg.DeviceName)
+	}
+}
+
+func TestReloadConfigDoesNotRefreshWhenLoadFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+	refreshCalled := make(chan struct{}, 1)
+	app.refreshHook = func() {
+		select {
+		case refreshCalled <- struct{}{}:
+		default:
+		}
+	}
+
+	app.reloadConfig()
+
+	select {
+	case <-refreshCalled:
+		t.Fatal("reloadConfig should not trigger refresh after a load failure")
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+func TestSaveConfigTriggersRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	cfg := config.ClientDefaults()
+	cfg.ServerURL = "https://example.com"
+	cfg.Password = "saved-password"
+	cfg.DeviceName = "saved-device"
+	if err := config.SaveClientConfig(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := newTestApp(t, Config{
+		ConfigPath: path,
+	})
+	app.loadConfigIntoForm()
+	app.deviceNameEntry.SetText("updated-device")
+
+	refreshCalled := make(chan struct{}, 1)
+	app.refreshHook = func() {
+		select {
+		case refreshCalled <- struct{}{}:
+		default:
+		}
+	}
+
+	if err := app.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	waitForSignal(t, refreshCalled, "save refresh")
+
+	saved, err := config.LoadClientConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if saved.DeviceName != "updated-device" {
+		t.Fatalf("device name not saved: %q", saved.DeviceName)
 	}
 }
 

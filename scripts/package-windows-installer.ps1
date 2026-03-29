@@ -34,6 +34,7 @@ try {
   Copy-Item (Join-Path $RootDir "docs/GUI_CLIENT.md") (Join-Path $StageDir "GUI_CLIENT.md")
   Copy-Item (Join-Path $RootDir "examples/client-windows.json") (Join-Path $StageDir "client.example.json")
   Copy-Item (Join-Path $RootDir "scripts/run-gui.ps1") (Join-Path $StageDir "run-gui.ps1")
+  Copy-Item (Join-Path $RootDir "internal/fyneapp/assets/app_icon.ico") (Join-Path $StageDir "app_icon.ico")
 
   $ArchitecturesAllowed = "x64os"
   $OutputBaseName = [System.IO.Path]::GetFileNameWithoutExtension($OutputFile)
@@ -59,11 +60,13 @@ SolidCompression=yes
 WizardStyle=modern
 OutputDir=$($InstallerDir -replace '\\','\\')
 OutputBaseFilename=$OutputBaseName
-UninstallDisplayIcon={app}\snt-gui.exe
+SetupIconFile={#MyStageDir}\app_icon.ico
+UninstallDisplayIcon={app}\app_icon.ico
 
 [Files]
 Source: "{#MyStageDir}\snt-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyStageDir}\snt.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyStageDir}\app_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyStageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyStageDir}\DEPLOYMENT.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyStageDir}\USER_GUIDE.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -72,8 +75,8 @@ Source: "{#MyStageDir}\client.example.json"; DestDir: "{app}"; Flags: ignorevers
 Source: "{#MyStageDir}\run-gui.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Simple NAT Traversal"; Filename: "{app}\snt-gui.exe"
-Name: "{autodesktop}\Simple NAT Traversal"; Filename: "{app}\snt-gui.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Simple NAT Traversal"; Filename: "{app}\snt-gui.exe"; IconFilename: "{app}\app_icon.ico"
+Name: "{autodesktop}\Simple NAT Traversal"; Filename: "{app}\snt-gui.exe"; Tasks: desktopicon; IconFilename: "{app}\app_icon.ico"
 Name: "{autoprograms}\Simple NAT Traversal CLI"; Filename: "{cmd}"; Parameters: "/K ""{app}\snt.exe -version"""
 
 [Tasks]

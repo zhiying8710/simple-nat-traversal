@@ -30,6 +30,7 @@ type tcpBindStream struct {
 	openResult chan error
 	inboundCh  chan tcpFrameEvent
 	done       chan struct{}
+	closeAcked atomic.Bool
 	lastSeen   atomic.Int64
 	startedAt  time.Time
 
@@ -144,15 +145,24 @@ func (s *tcpBindStream) snapshotStatus() (state string, startedAt, lastSeen time
 }
 
 func (c *Client) runTCPBind(bind *bindProxy) {
+	retryDelay := tcpAcceptRetryMin
 	for {
 		conn, err := bind.tcp.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			logx.Warnf("bind %s accept failed: %v", bind.name, err)
-			return
+			logx.Warnf("bind %s accept failed; retrying in %s: %v", bind.name, retryDelay, err)
+			time.Sleep(retryDelay)
+			if retryDelay < tcpAcceptRetryMax {
+				retryDelay *= 2
+				if retryDelay > tcpAcceptRetryMax {
+					retryDelay = tcpAcceptRetryMax
+				}
+			}
+			continue
 		}
+		retryDelay = tcpAcceptRetryMin
 		go c.handleTCPBindConn(bind, conn)
 	}
 }
@@ -206,6 +216,25 @@ func (c *Client) failTCPBindOpen(stream *tcpBindStream, err error) {
 	c.closeTCPBindOutbound(stream, err.Error())
 }
 
+func finishTCPOpen(stream *tcpBindStream, err error) error {
+	if err != nil {
+		return err
+	}
+	stream.mu.Lock()
+	stream.openReady = true
+	stream.mu.Unlock()
+	return nil
+}
+
+func openTCPResultAfterClose(stream *tcpBindStream) error {
+	select {
+	case err := <-stream.openResult:
+		return finishTCPOpen(stream, err)
+	default:
+		return net.ErrClosed
+	}
+}
+
 func (c *Client) openTCPStream(stream *tcpBindStream) error {
 	payload := proto.ServicePayload{
 		Kind:      proto.DataKindTCPOpen,
@@ -227,26 +256,13 @@ func (c *Client) openTCPStream(stream *tcpBindStream) error {
 	for {
 		select {
 		case err := <-stream.openResult:
-			if err != nil {
-				return err
-			}
-			stream.mu.Lock()
-			stream.openReady = true
-			stream.mu.Unlock()
-			return nil
+			return finishTCPOpen(stream, err)
 		case <-retry.C:
 			if err := c.sendServicePayload(stream.peerID, payload); err != nil {
 				return err
 			}
 		case <-stream.done:
-			select {
-			case err := <-stream.openResult:
-				if err != nil {
-					return err
-				}
-			default:
-			}
-			return net.ErrClosed
+			return openTCPResultAfterClose(stream)
 		case <-deadline.C:
 			return errors.New("tcp open timed out")
 		}
@@ -657,10 +673,49 @@ func (c *Client) handleTCPAck(peerID string, payload proto.ServicePayload) {
 	}
 }
 
+func (c *Client) handleTCPCloseAck(peerID string, payload proto.ServicePayload) {
+	if payload.Protocol != "" && payload.Protocol != config.ServiceProtocolTCP {
+		return
+	}
+
+	c.mu.RLock()
+	bind := c.binds[payload.BindName]
+	proxy := c.serviceProxies[strings.Join([]string{peerID, payload.BindName, payload.Service, payload.SessionID}, "|")]
+	c.mu.RUnlock()
+
+	if bind != nil {
+		bind.mu.Lock()
+		stream := bind.tcpStreams[payload.SessionID]
+		bind.mu.Unlock()
+		if stream != nil && stream.peerID == peerID {
+			stream.touch()
+			stream.closeAcked.Store(true)
+			return
+		}
+	}
+
+	if proxy != nil {
+		proxy.touch()
+		proxy.closeAcked.Store(true)
+	}
+}
+
+func (c *Client) sendTCPCloseAck(peerID string, payload proto.ServicePayload) {
+	_ = c.sendServicePayload(peerID, proto.ServicePayload{
+		Kind:      proto.DataKindTCPCloseAck,
+		Protocol:  config.ServiceProtocolTCP,
+		BindName:  payload.BindName,
+		Service:   payload.Service,
+		SessionID: payload.SessionID,
+		Ack:       payload.Ack,
+	})
+}
+
 func (c *Client) handleTCPClose(peerID string, payload proto.ServicePayload) {
 	if payload.Protocol != "" && payload.Protocol != config.ServiceProtocolTCP {
 		return
 	}
+	c.sendTCPCloseAck(peerID, payload)
 
 	c.mu.RLock()
 	bind := c.binds[payload.BindName]
@@ -699,18 +754,26 @@ func (c *Client) closeTCPBindOutbound(stream *tcpBindStream, errText string) {
 		return
 	default:
 	}
-	_ = c.sendServicePayload(stream.peerID, proto.ServicePayload{
-		Kind:      proto.DataKindTCPClose,
-		Protocol:  config.ServiceProtocolTCP,
-		BindName:  stream.bindName,
-		Service:   stream.service,
-		SessionID: stream.sessionID,
-		Ack:       finalSeq,
-		Error:     errText,
-	})
-	drained, closed := waitTCPSenderDrain(stream.done, stream.sender, tcpCloseFlushTimeout)
-	if !drained && !closed {
-		c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_bind_flush_timeout", fmt.Sprintf("bind=%s service=%s session=%s pending=%d", stream.bindName, stream.service, stream.sessionID, stream.sender.pendingCount()))
+	sendClose := func() error {
+		return c.sendServicePayload(stream.peerID, proto.ServicePayload{
+			Kind:      proto.DataKindTCPClose,
+			Protocol:  config.ServiceProtocolTCP,
+			BindName:  stream.bindName,
+			Service:   stream.service,
+			SessionID: stream.sessionID,
+			Ack:       finalSeq,
+			Error:     errText,
+		})
+	}
+	drained, acked, closed := waitTCPCloseHandshake(stream.done, stream.sender, func() bool {
+		return stream.closeAcked.Load()
+	}, sendClose, tcpCloseFlushTimeout)
+	if !closed && (!drained || !acked) {
+		pending := 0
+		if stream.sender != nil {
+			pending = stream.sender.pendingCount()
+		}
+		c.recordEvent("tcp", stream.peerID, stream.peerName, "tcp_bind_close_timeout", fmt.Sprintf("bind=%s service=%s session=%s pending=%d close_acked=%t", stream.bindName, stream.service, stream.sessionID, pending, acked))
 	}
 	stream.close()
 }
@@ -728,18 +791,26 @@ func (c *Client) closeTCPServiceProxyOutbound(proxy *serviceProxy, errText strin
 		return
 	default:
 	}
-	_ = c.sendServicePayload(proxy.peerID, proto.ServicePayload{
-		Kind:      proto.DataKindTCPClose,
-		Protocol:  config.ServiceProtocolTCP,
-		BindName:  proxy.bindName,
-		Service:   proxy.service,
-		SessionID: proxy.sessionID,
-		Ack:       finalSeq,
-		Error:     errText,
-	})
-	drained, closed := waitTCPSenderDrain(proxy.done, proxy.sender, tcpCloseFlushTimeout)
-	if !drained && !closed {
-		c.recordEvent("tcp", proxy.peerID, proxy.peerName, "tcp_publish_flush_timeout", fmt.Sprintf("bind=%s service=%s session=%s target=%s pending=%d", proxy.bindName, proxy.service, proxy.sessionID, proxy.target, proxy.sender.pendingCount()))
+	sendClose := func() error {
+		return c.sendServicePayload(proxy.peerID, proto.ServicePayload{
+			Kind:      proto.DataKindTCPClose,
+			Protocol:  config.ServiceProtocolTCP,
+			BindName:  proxy.bindName,
+			Service:   proxy.service,
+			SessionID: proxy.sessionID,
+			Ack:       finalSeq,
+			Error:     errText,
+		})
+	}
+	drained, acked, closed := waitTCPCloseHandshake(proxy.done, proxy.sender, func() bool {
+		return proxy.closeAcked.Load()
+	}, sendClose, tcpCloseFlushTimeout)
+	if !closed && (!drained || !acked) {
+		pending := 0
+		if proxy.sender != nil {
+			pending = proxy.sender.pendingCount()
+		}
+		c.recordEvent("tcp", proxy.peerID, proxy.peerName, "tcp_publish_close_timeout", fmt.Sprintf("bind=%s service=%s session=%s target=%s pending=%d close_acked=%t", proxy.bindName, proxy.service, proxy.sessionID, proxy.target, pending, acked))
 	}
 	proxy.close()
 }

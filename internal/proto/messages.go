@@ -15,14 +15,15 @@ const (
 )
 
 const (
-	DataKindRequest   = "service_request"
-	DataKindResponse  = "service_response"
-	DataKindKeepalive = "keepalive"
-	DataKindTCPOpen   = "tcp_open"
-	DataKindTCPOk     = "tcp_open_result"
-	DataKindTCPData   = "tcp_data"
-	DataKindTCPAck    = "tcp_ack"
-	DataKindTCPClose  = "tcp_close"
+	DataKindRequest     = "service_request"
+	DataKindResponse    = "service_response"
+	DataKindKeepalive   = "keepalive"
+	DataKindTCPOpen     = "tcp_open"
+	DataKindTCPOk       = "tcp_open_result"
+	DataKindTCPData     = "tcp_data"
+	DataKindTCPAck      = "tcp_ack"
+	DataKindTCPClose    = "tcp_close"
+	DataKindTCPCloseAck = "tcp_close_ack"
 )
 
 type JoinNetworkRequest struct {
