@@ -270,7 +270,13 @@ func (c *Client) openTCPStream(stream *tcpBindStream) error {
 }
 
 func (c *Client) runTCPBindOutbound(stream *tcpBindStream) {
-	err := tcpReadChunks(stream.conn, func(chunk []byte) error {
+	chunkSize := tcpChunkReadSize(proto.ServicePayload{
+		Protocol:  config.ServiceProtocolTCP,
+		BindName:  stream.bindName,
+		Service:   stream.service,
+		SessionID: stream.sessionID,
+	}, c.networkSnapshot().deviceID)
+	err := tcpReadChunks(stream.conn, chunkSize, func(chunk []byte) error {
 		stream.touch()
 		return stream.sender.sendChunk(chunk)
 	})
@@ -416,7 +422,13 @@ func (c *Client) getOrCreateTCPServiceProxy(peerID, bindName, service, sessionID
 }
 
 func (c *Client) runTCPServiceProxyOutbound(proxy *serviceProxy) {
-	err := tcpReadChunks(proxy.tcpConn, func(chunk []byte) error {
+	chunkSize := tcpChunkReadSize(proto.ServicePayload{
+		Protocol:  config.ServiceProtocolTCP,
+		BindName:  proxy.bindName,
+		Service:   proxy.service,
+		SessionID: proxy.sessionID,
+	}, c.networkSnapshot().deviceID)
+	err := tcpReadChunks(proxy.tcpConn, chunkSize, func(chunk []byte) error {
 		proxy.touch()
 		return proxy.sender.sendChunk(chunk)
 	})

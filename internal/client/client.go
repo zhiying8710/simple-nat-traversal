@@ -32,7 +32,8 @@ const (
 	serviceProxyTTL      = 2 * time.Minute
 	tcpIdleTTL           = 24 * time.Hour
 	traceEventLimit      = 80
-	tcpChunkSize         = 1200
+	tcpChunkSizeLimit    = 1200
+	tcpTargetPacketSize  = 1200
 	tcpSendWindow        = 32
 	tcpResendAfter       = 250 * time.Millisecond
 	tcpOpenTimeout       = 5 * time.Second
@@ -664,11 +665,11 @@ func (c *Client) handleDatagram(addr *net.UDPAddr, raw []byte) {
 
 	switch env.Type {
 	case proto.TypeRegisterAck:
-		if env.RegisterAck != nil {
+		if env.RegisterAck != nil && c.isServerControlAddr(addr) {
 			c.handleRegisterAck(env.RegisterAck)
 		}
 	case proto.TypePeerSync:
-		if env.PeerSync != nil {
+		if env.PeerSync != nil && c.isServerControlAddr(addr) {
 			c.handlePeerSync(env.PeerSync)
 		}
 	case proto.TypePunchHello:
@@ -680,12 +681,26 @@ func (c *Client) handleDatagram(addr *net.UDPAddr, raw []byte) {
 			c.handleData(addr, env.Data)
 		}
 	case proto.TypeError:
-		if env.Error != nil {
+		if env.Error != nil && c.isServerControlAddr(addr) {
 			c.handleError(addr, env.Error)
 		}
 	default:
 		logx.Warnf("unknown udp envelope type=%s from %s", env.Type, addr)
 	}
+}
+
+func (c *Client) isServerControlAddr(addr *net.UDPAddr) bool {
+	if addr == nil {
+		return false
+	}
+	serverAddr := c.networkSnapshot().serverUDPAddr
+	if serverAddr == nil {
+		return false
+	}
+	if addr.Port != serverAddr.Port {
+		return false
+	}
+	return addr.IP.Equal(serverAddr.IP)
 }
 
 func (c *Client) handleRegisterAck(msg *proto.RegisterAckMessage) {

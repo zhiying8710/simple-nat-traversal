@@ -1,6 +1,11 @@
 package client
 
-import "testing"
+import (
+	"testing"
+
+	"simple-nat-traversal/internal/config"
+	"simple-nat-traversal/internal/proto"
+)
 
 func TestProcessTCPInboundRejectsZeroSeqWithoutAckUnderflow(t *testing.T) {
 	t.Parallel()
@@ -73,3 +78,35 @@ func TestProcessTCPInboundBuffersWithinReceiveWindow(t *testing.T) {
 	}
 }
 
+func TestTCPChunkReadSizeKeepsEnvelopeWithinBudget(t *testing.T) {
+	t.Parallel()
+
+	base := proto.ServicePayload{
+		Protocol:  config.ServiceProtocolTCP,
+		BindName:  "win-rdp-bind",
+		Service:   "rdp",
+		SessionID: "tcp-session-1234567890",
+	}
+	fromID := "dev_0123456789abcdef"
+
+	fullSize := tcpDataEnvelopeSize(base, fromID, tcpChunkSizeLimit)
+	if fullSize <= tcpTargetPacketSize {
+		t.Fatalf("expected raw chunk limit to exceed packet budget, got %d <= %d", fullSize, tcpTargetPacketSize)
+	}
+
+	chunkSize := tcpChunkReadSize(base, fromID)
+	if chunkSize <= 0 {
+		t.Fatalf("expected positive chunk size, got %d", chunkSize)
+	}
+	if chunkSize >= tcpChunkSizeLimit {
+		t.Fatalf("expected computed chunk size to be reduced below %d, got %d", tcpChunkSizeLimit, chunkSize)
+	}
+
+	packetSize := tcpDataEnvelopeSize(base, fromID, chunkSize)
+	if packetSize > tcpTargetPacketSize {
+		t.Fatalf("expected computed packet size <= %d, got %d", tcpTargetPacketSize, packetSize)
+	}
+	if nextSize := tcpDataEnvelopeSize(base, fromID, chunkSize+1); nextSize <= tcpTargetPacketSize {
+		t.Fatalf("expected next chunk size to exceed packet budget, got %d", nextSize)
+	}
+}

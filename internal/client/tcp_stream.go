@@ -3,6 +3,7 @@ package client
 import (
 	"errors"
 	"io"
+	"math"
 	"net"
 	"slices"
 	"strings"
@@ -244,8 +245,51 @@ func writeAll(conn net.Conn, payload []byte) error {
 	return nil
 }
 
-func tcpReadChunks(conn net.Conn, handle func([]byte) error) error {
-	buf := make([]byte, tcpChunkSize)
+func tcpChunkReadSize(basePayload proto.ServicePayload, fromID string) int {
+	best := 1
+	low, high := 1, tcpChunkSizeLimit
+	for low <= high {
+		size := low + (high-low)/2
+		if tcpDataEnvelopeSize(basePayload, fromID, size) <= tcpTargetPacketSize {
+			best = size
+			low = size + 1
+			continue
+		}
+		high = size - 1
+	}
+	return best
+}
+
+func tcpDataEnvelopeSize(basePayload proto.ServicePayload, fromID string, payloadSize int) int {
+	payload := basePayload
+	payload.Kind = proto.DataKindTCPData
+	payload.StreamSeq = math.MaxUint64
+	payload.Payload = make([]byte, payloadSize)
+
+	plaintext, err := proto.MarshalServicePayload(payload)
+	if err != nil {
+		return maxDatagramSize
+	}
+	env := proto.Envelope{
+		Type: proto.TypeData,
+		Data: &proto.DataMessage{
+			FromID:     fromID,
+			Seq:        math.MaxUint64,
+			Ciphertext: make([]byte, len(plaintext)+16),
+		},
+	}
+	raw, err := proto.MarshalEnvelope(env)
+	if err != nil {
+		return maxDatagramSize
+	}
+	return len(raw)
+}
+
+func tcpReadChunks(conn net.Conn, chunkSize int, handle func([]byte) error) error {
+	if chunkSize <= 0 {
+		chunkSize = 1
+	}
+	buf := make([]byte, chunkSize)
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
