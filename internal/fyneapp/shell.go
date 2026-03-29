@@ -47,8 +47,7 @@ func (a *App) initWidgets() {
 	a.eventsGrid = newDisplayGrid(a.t("loading"))
 	a.logTailGrid = newDisplayGrid(a.t("logs_none"))
 
-	a.pageTitleLabel = widget.NewLabelWithStyle(a.t("tab_overview"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	a.pageTitleLabel.Wrapping = fyne.TextWrapWord
+	a.pageTitleLabel = newTitleLabel(a.t("tab_overview"))
 	a.pageIntroLabel = newMutedWrapLabel(a.t("page_overview_intro"))
 	a.lastRefreshLabel = newMutedWrapLabel(a.t("last_refresh") + ": -")
 	a.messageLabel = newWrapLabel(a.t("ready"))
@@ -58,8 +57,7 @@ func (a *App) initWidgets() {
 	a.sidebarStatusLabel.Importance = widget.HighImportance
 	a.sidebarDeviceLabel = newMutedWrapLabel(a.t("sidebar_device_pending"))
 
-	a.heroTitleLabel = widget.NewLabelWithStyle(a.t("hero_idle_title"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	a.heroTitleLabel.Wrapping = fyne.TextWrapWord
+	a.heroTitleLabel = newTitleLabel(a.t("hero_idle_title"))
 	a.heroDetailLabel = newMutedWrapLabel(a.t("hero_idle_detail"))
 	a.runtimeSummaryLabel = newWrapLabel(a.t("loading"))
 	a.serviceSummaryLabel = newWrapLabel(a.t("loading"))
@@ -163,7 +161,7 @@ func (a *App) buildPageHeader() fyne.CanvasObject {
 		a.lastRefreshLabel,
 	)
 	content := container.NewVBox(
-		container.NewBorder(nil, nil, left, right, nil),
+		container.NewBorder(nil, nil, nil, right, left),
 		widget.NewSeparator(),
 		a.messageLabel,
 	)
@@ -175,13 +173,12 @@ func (a *App) buildSidebar() fyne.CanvasObject {
 	icon.FillMode = canvas.ImageFillContain
 	icon.SetMinSize(fyne.NewSize(42, 42))
 
-	title := widget.NewLabelWithStyle(a.t("app_title"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	title.Wrapping = fyne.TextWrapWord
+	title := newTitleLabel(a.t("app_title"))
 	subtitle := newMutedWrapLabel(a.t("app_subtitle"))
-	configPathLabel := newMutedWrapLabel(a.t("config_path") + "\n" + a.cfg.ConfigPath)
+	configPathLabel := newMutedBreakLabel(a.t("config_path") + "\n" + a.cfg.ConfigPath)
 
 	header := container.NewVBox(
-		container.NewHBox(icon, container.NewVBox(title, subtitle)),
+		container.NewBorder(nil, nil, icon, nil, container.NewVBox(title, subtitle)),
 		widget.NewSeparator(),
 	)
 	nav := container.NewVBox(
@@ -204,13 +201,12 @@ func (a *App) buildSidebar() fyne.CanvasObject {
 	background := canvas.NewRectangle(darkPanelFill)
 	background.StrokeColor = darkPanelStroke
 	background.StrokeWidth = 1
-	background.SetMinSize(fyne.NewSize(248, 0))
+	background.SetMinSize(fyne.NewSize(280, 0))
 	return container.NewStack(background, sidebar)
 }
 
 func (a *App) buildInsightRail() fyne.CanvasObject {
-	headerTitle := widget.NewLabelWithStyle(a.t("insight_title"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	headerTitle.Wrapping = fyne.TextWrapWord
+	headerTitle := newTitleLabel(a.t("insight_title"))
 	headerSubtitle := newMutedWrapLabel(a.t("insight_intro"))
 
 	content := container.NewVBox(
@@ -226,7 +222,7 @@ func (a *App) buildInsightRail() fyne.CanvasObject {
 	background := canvas.NewRectangle(color.NRGBA{R: 0xF1, G: 0xE8, B: 0xDE, A: 0xFF})
 	background.StrokeColor = lightPanelStroke
 	background.StrokeWidth = 1
-	background.SetMinSize(fyne.NewSize(320, 0))
+	background.SetMinSize(fyne.NewSize(360, 0))
 	return container.NewStack(background, container.NewPadded(scroll))
 }
 
@@ -429,8 +425,8 @@ func (a *App) buildDevicesPage() fyne.CanvasObject {
 		a.t("section_kick"),
 		a.t("devices_kick_intro"),
 		container.NewVBox(
-			container.NewHBox(a.kickDeviceNameEntry, kickByNameButton),
-			container.NewHBox(a.kickDeviceIDEntry, kickByIDButton),
+			newActionRow(a.kickDeviceNameEntry, kickByNameButton),
+			newActionRow(a.kickDeviceIDEntry, kickByIDButton),
 		),
 		lightPanelFill,
 		lightPanelStroke,
@@ -621,7 +617,7 @@ func newSurfacePanel(title, subtitle string, content fyne.CanvasObject, fill, st
 	body := content
 	if strings.TrimSpace(title) != "" || strings.TrimSpace(subtitle) != "" {
 		header := []fyne.CanvasObject{
-			widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			newTitleLabel(title),
 		}
 		if strings.TrimSpace(subtitle) != "" {
 			header = append(header, newMutedWrapLabel(subtitle))
@@ -640,6 +636,17 @@ func newSurfacePanel(title, subtitle string, content fyne.CanvasObject, fill, st
 	return container.NewStack(background, container.NewPadded(body))
 }
 
+func newActionRow(input fyne.CanvasObject, action fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewBorder(nil, nil, nil, action, input)
+}
+
+func newTitleLabel(text string) *widget.Label {
+	label := widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	label.Wrapping = fyne.TextWrapOff
+	label.Truncation = fyne.TextTruncateEllipsis
+	return label
+}
+
 func newWrapLabel(text string) *widget.Label {
 	label := widget.NewLabel(text)
 	label.Wrapping = fyne.TextWrapWord
@@ -648,6 +655,13 @@ func newWrapLabel(text string) *widget.Label {
 
 func newMutedWrapLabel(text string) *widget.Label {
 	label := newWrapLabel(text)
+	label.Importance = widget.LowImportance
+	return label
+}
+
+func newMutedBreakLabel(text string) *widget.Label {
+	label := widget.NewLabel(text)
+	label.Wrapping = fyne.TextWrapBreak
 	label.Importance = widget.LowImportance
 	return label
 }
