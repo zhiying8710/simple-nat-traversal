@@ -14,7 +14,7 @@
 
 - `cmd/snt-server`: 会合服务器，提供 HTTP 控制面和 UDP 会合面。
 - `cmd/snt`: macOS / Windows / Linux 都可编译运行的客户端。
-- `cmd/snt-gui`: 基于 Fyne 的原生桌面 GUI，优先面向 macOS / Windows。
+- `cmd/snt-gui`: 基于 Wails 的原生桌面 GUI，优先面向 macOS / Windows。
 - 服务端配置里保存一个网络密码，客户端只要密码正确就能加入同一个网络。
 - 服务端管理接口使用独立的 `admin_password`；客户端只有配置了相同的 `admin_password` 才能查看在线设备或踢设备。
 - P2P 会话使用该密码派生出的网络密钥做握手认证，再用临时 X25519 + AES-GCM 加密业务包。
@@ -79,6 +79,28 @@ go build ./...
 说明：
 
 - `cmd/snt` 和 `cmd/snt-server` 仍然适合交叉编译。
+- 如果你修改了 Wails 前端源码，还需要先生成一次桌面资源：
+
+```bash
+cd internal/wailsapp/frontend
+npm install
+npm run build
+```
+
+- 正式打包 GUI，推荐直接使用发布脚本：
+
+```bash
+bash ./scripts/build-release.sh <version>
+```
+
+- 如果你要在 macOS 上直接从源码构建 GUI，需要带上 Wails 的生产构建 tag 和 Darwin 链接参数：
+
+```bash
+sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
+SDKROOT="$sdkroot" CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers -mmacosx-version-min=10.13" go build -tags production ./cmd/snt-gui
+```
+
+- 前端源码位于 `internal/wailsapp/frontend/src`，构建产物输出到 `internal/wailsapp/frontend/dist` 并由 Go 侧 embed。
 - 正式发布会产出：
   - Windows 多架构安装器 `setup.exe`
   - macOS 多架构 `dmg`
@@ -180,7 +202,8 @@ go run ./cmd/snt -config ./examples/client-windows.json
 启动 GUI：
 
 ```bash
-go run ./cmd/snt-gui
+sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
+SDKROOT="$sdkroot" CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers -mmacosx-version-min=10.13" go run -tags production ./cmd/snt-gui
 ```
 
 查看版本：

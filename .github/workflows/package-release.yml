@@ -37,6 +37,24 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: internal/wailsapp/frontend/package-lock.json
+
+      - name: Verify Wails frontend assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd internal/wailsapp/frontend
+          npm ci
+          npm run check
+          npm run build
+          cd "${GITHUB_WORKSPACE}"
+          git diff --exit-code -- internal/wailsapp/frontend/dist
+
       - name: Run full test suite
         shell: bash
         run: |
@@ -134,6 +152,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: internal/wailsapp/frontend/package-lock.json
+
+      - name: Prepare Wails frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd internal/wailsapp/frontend
+          npm ci
+          npm run build
+
       - name: Build and package macOS artifacts
         shell: bash
         run: |
@@ -167,8 +200,8 @@ jobs:
               CXX="clang++ -arch ${clang_arch}" \
               CGO_CFLAGS="-arch ${clang_arch}" \
               CGO_CXXFLAGS="-arch ${clang_arch}" \
-              CGO_LDFLAGS="-arch ${clang_arch}" \
-              go build -ldflags "${LDFLAGS}" -o "${out}" ./cmd/snt-gui
+              CGO_LDFLAGS="-arch ${clang_arch} -framework UniformTypeIdentifiers -mmacosx-version-min=10.13" \
+              go build -tags production -ldflags "${LDFLAGS}" -o "${out}" ./cmd/snt-gui
           }
 
           GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o "${TMP_DIR}/snt-arm64" ./cmd/snt
@@ -224,7 +257,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Setup MinGW for Fyne
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: internal/wailsapp/frontend/package-lock.json
+
+      - name: Prepare Wails frontend
+        shell: bash
+        run: |
+          cd internal/wailsapp/frontend
+          npm ci
+          npm run build
+
+      - name: Setup MinGW for Wails desktop GUI
         uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.msystem }}
@@ -269,7 +316,7 @@ jobs:
           export CXX=${{ matrix.cxx }}
 
           go build -ldflags "${LDFLAGS}" -o "${BIN_DIR}/snt.exe" ./cmd/snt
-          go build -ldflags "${GUI_LDFLAGS}" -o "${BIN_DIR}/snt-gui.exe" ./cmd/snt-gui
+          go build -tags production -ldflags "${GUI_LDFLAGS}" -o "${BIN_DIR}/snt-gui.exe" ./cmd/snt-gui
 
       - name: Package Windows installer
         shell: pwsh

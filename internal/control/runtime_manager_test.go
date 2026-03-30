@@ -96,3 +96,16 @@ func TestLogBufferSnapshot(t *testing.T) {
 		t.Fatalf("unexpected log snapshot: %+v", got)
 	}
 }
+
+func TestLogBufferSnapshotEmpty(t *testing.T) {
+	t.Parallel()
+
+	buffer := NewLogBuffer(2)
+	got := buffer.Snapshot()
+	if got == nil {
+		t.Fatal("Snapshot returned nil for empty buffer")
+	}
+	if len(got) != 0 {
+		t.Fatalf("Snapshot length = %d, want 0", len(got))
+	}
+}

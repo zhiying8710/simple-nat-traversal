@@ -1,19 +1,21 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"io"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
+
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
 	"simple-nat-traversal/internal/buildinfo"
 	"simple-nat-traversal/internal/config"
 	"simple-nat-traversal/internal/control"
-	"simple-nat-traversal/internal/fyneapp"
+	"simple-nat-traversal/internal/desktopapp"
 	"simple-nat-traversal/internal/logx"
+	"simple-nat-traversal/internal/wailsapp"
 )
 
 func main() {
@@ -39,20 +41,27 @@ func main() {
 		_, _ = logx.SetLevel(cfg.LogLevel)
 	}
 
-	app, err := fyneapp.New(fyneapp.Config{
+	backend := wailsapp.New(desktopapp.Dependencies{
 		ExecutablePath: executablePath,
 		ConfigPath:     *configPath,
 		RuntimeManager: control.NewRuntimeManager(),
 		Logs:           logBuffer,
 	})
-	if err != nil {
-		log.Fatalf("create gui app: %v", err)
-	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	if err := app.Run(ctx); err != nil {
-		log.Fatalf("gui exited: %v", err)
+	if err := wails.Run(&options.App{
+		Title:  "简单打洞组网",
+		Width:  1440,
+		Height: 940,
+		AssetServer: &assetserver.Options{
+			Assets: wailsapp.Assets,
+		},
+		BackgroundColour: &options.RGBA{R: 0xF5, G: 0xEE, B: 0xE5, A: 0xFF},
+		OnStartup:        backend.Startup,
+		OnShutdown:       backend.Shutdown,
+		Bind: []interface{}{
+			backend,
+		},
+	}); err != nil {
+		log.Fatalf("run wails app: %v", err)
 	}
 }

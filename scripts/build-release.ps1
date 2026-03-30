@@ -82,6 +82,31 @@ function Build-One {
   $env:GOOS = $Goos
   $env:GOARCH = $Goarch
   go build -ldflags $LdFlags -o $out $Package
+  if ($LASTEXITCODE -ne 0) {
+    throw "go build failed for $Package ($Goos/$Goarch) with exit code $LASTEXITCODE"
+  }
+}
+
+function Prepare-WailsFrontend {
+  $FrontendDir = Join-Path $RootDir "internal/wailsapp/frontend"
+  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "npm is required to build the Wails frontend"
+  }
+
+  Write-Host "preparing Wails frontend"
+  Push-Location $FrontendDir
+  try {
+    npm ci
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm ci failed"
+    }
+    npm run build
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm run build failed"
+    }
+  } finally {
+    Pop-Location
+  }
 }
 
 function Build-GuiIfNativeHost {
@@ -93,7 +118,7 @@ function Build-GuiIfNativeHost {
   )
 
   if ($HostGoos -ne $Goos -or $HostGoarch -ne $Goarch) {
-    Write-Host "skipping $Name-$Version-$Goos-$Goarch: native $Goos/$Goarch build host required for Fyne GUI (current host $HostGoos/$HostGoarch)"
+    Write-Host "skipping $Name-$Version-$Goos-$Goarch: native $Goos/$Goarch build host required for desktop GUI packaging (current host $HostGoos/$HostGoarch)"
     return
   }
 
@@ -103,7 +128,7 @@ function Build-GuiIfNativeHost {
 function Build-WindowsGui {
   $Goarch = $HostGoarch
   if ($Goarch -ne "amd64") {
-    throw "Windows GUI packaging currently only supports amd64. The upstream Fyne arm64 Windows build path requests OpenGL ES and is failing on current drivers; use the amd64 installer for now."
+    throw "Windows GUI packaging currently only supports amd64 in this release pipeline."
   }
   $guiOut = Join-Path $DistDir "snt-gui-$Version-windows-$Goarch.exe"
   $cliOut = Join-Path $DistDir "snt-$Version-windows-$Goarch.exe"
@@ -130,13 +155,19 @@ function Build-WindowsGui {
   $env:GOOS = "windows"
   $env:GOARCH = $Goarch
   go build -ldflags $LdFlags -o $cliOut ./cmd/snt
+  if ($LASTEXITCODE -ne 0) {
+    throw "go build failed for ./cmd/snt (windows/$Goarch) with exit code $LASTEXITCODE"
+  }
 
   Write-Host "building $guiOut"
   $env:CGO_ENABLED = "1"
   $env:CC = $cc
   $env:CXX = $cxx
   $GuiLdFlags = "$LdFlags -H=windowsgui"
-  go build -ldflags $GuiLdFlags -o $guiOut ./cmd/snt-gui
+  go build -tags production -ldflags $GuiLdFlags -o $guiOut ./cmd/snt-gui
+  if ($LASTEXITCODE -ne 0) {
+    throw "go build failed for ./cmd/snt-gui (windows/$Goarch) with exit code $LASTEXITCODE"
+  }
   Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
   Remove-Item Env:CC -ErrorAction SilentlyContinue
   Remove-Item Env:CXX -ErrorAction SilentlyContinue
@@ -153,6 +184,7 @@ Build-One linux amd64 ./cmd/snt-server snt-server
 Build-One linux amd64 ./cmd/snt snt
 
 if ($HostGoos -eq "windows") {
+  Prepare-WailsFrontend
   Build-WindowsGui
 } else {
   Write-Host "skipping Windows installer packaging: run this script on a Windows host with MinGW and Inno Setup installed"

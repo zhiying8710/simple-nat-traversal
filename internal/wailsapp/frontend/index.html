@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>简单打洞组网</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">SNT</div>
+          <div>
+            <p class="eyebrow">Wails Desktop</p>
+            <h1>简单打洞组网</h1>
+            <p class="muted">配置、启停、服务编排、网络管理与诊断</p>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-button active" data-page="dashboard">总览</button>
+          <button class="nav-button" data-page="services">服务</button>
+          <button class="nav-button" data-page="devices">网络</button>
+          <button class="nav-button" data-page="settings">连接</button>
+          <button class="nav-button" data-page="diagnostics">诊断</button>
+        </nav>
+        <section class="sidebar-meta">
+          <div class="meta-block">
+            <span class="meta-label">客户端状态</span>
+            <strong id="sidebar-runtime">加载中...</strong>
+          </div>
+          <div class="meta-block">
+            <span class="meta-label">设备</span>
+            <strong id="sidebar-device">-</strong>
+          </div>
+          <div class="meta-block">
+            <span class="meta-label">配置文件</span>
+            <code id="sidebar-config-path">-</code>
+          </div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="page-eyebrow">状态与拓扑</p>
+            <h2 id="page-title">总览</h2>
+            <p class="muted" id="page-intro">查看当前连接、服务发布和风险信号。</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="refresh-button" class="primary">刷新</button>
+            <button id="save-button">保存配置</button>
+            <button id="start-button">启动客户端</button>
+            <button id="stop-button">停止客户端</button>
+          </div>
+        </header>
+
+        <section class="status-strip">
+          <div class="status-pill">
+            <span>运行态</span>
+            <strong id="runtime-state">-</strong>
+          </div>
+          <div class="status-pill">
+            <span>网络状态</span>
+            <strong id="network-state">-</strong>
+          </div>
+          <div class="status-pill">
+            <span>最近刷新</span>
+            <strong id="last-refresh">-</strong>
+          </div>
+          <div class="status-pill wide">
+            <span>消息</span>
+            <strong id="message-bar">准备就绪</strong>
+          </div>
+        </section>
+
+        <section class="page active" id="page-dashboard">
+          <div class="hero">
+            <div>
+              <p class="eyebrow">控制台</p>
+              <h3 id="hero-title">加载中...</h3>
+              <p class="hero-detail" id="hero-detail">正在初始化应用状态。</p>
+            </div>
+            <div class="hero-actions">
+              <button id="dashboard-services">管理服务</button>
+              <button id="dashboard-devices">查看设备</button>
+              <button id="dashboard-diagnostics">打开诊断</button>
+            </div>
+          </div>
+
+          <div class="card-grid three">
+            <article class="card">
+              <p class="eyebrow">运行态</p>
+              <h3>客户端与连接</h3>
+              <pre id="runtime-summary" class="metric-list"></pre>
+            </article>
+            <article class="card">
+              <p class="eyebrow">服务面</p>
+              <h3>发布、绑定与发现</h3>
+              <pre id="service-summary" class="metric-list"></pre>
+            </article>
+            <article class="card warning-card">
+              <p class="eyebrow">告警</p>
+              <h3>当前风险</h3>
+              <pre id="alert-summary" class="metric-list"></pre>
+            </article>
+          </div>
+
+          <div class="card-grid two">
+            <article class="card">
+              <p class="eyebrow">拓扑快照</p>
+              <h3>设备与对等节点</h3>
+              <pre id="topology-summary" class="metric-list"></pre>
+            </article>
+            <article class="card">
+              <p class="eyebrow">日志尾部</p>
+              <h3>最近运行日志</h3>
+              <pre id="log-tail" class="scroll-block"></pre>
+            </article>
+          </div>
+        </section>
+
+        <section class="page" id="page-services">
+          <div class="card-grid two">
+            <article class="card">
+              <p class="eyebrow">发布服务</p>
+              <h3>新增或更新本地服务</h3>
+              <div class="stack">
+                <label>
+                  已有发布
+                  <select id="publish-select"></select>
+                </label>
+                <div class="inline-actions">
+                  <button id="publish-load">载入选中</button>
+                  <button id="publish-delete">删除</button>
+                </div>
+                <label>
+                  协议
+                  <select id="publish-protocol">
+                    <option value="udp">udp</option>
+                    <option value="tcp">tcp</option>
+                  </select>
+                </label>
+                <label>
+                  服务名
+                  <input id="publish-name" placeholder="例如 game" />
+                </label>
+                <label>
+                  本地地址
+                  <input id="publish-local" placeholder="例如 127.0.0.1:19132" />
+                </label>
+                <button id="publish-save" class="primary">新增或更新</button>
+              </div>
+            </article>
+
+            <article class="card">
+              <p class="eyebrow">远端服务发现</p>
+              <h3>一键绑定到本机随机端口</h3>
+              <div id="discovered-table" class="table-wrap"></div>
+            </article>
+          </div>
+
+          <article class="card">
+            <p class="eyebrow">绑定服务</p>
+            <h3>把远端服务映射到本机</h3>
+            <div class="service-layout">
+              <div class="stack">
+                <label>
+                  已有绑定
+                  <select id="bind-select"></select>
+                </label>
+                <div class="inline-actions">
+                  <button id="bind-load">载入选中</button>
+                  <button id="bind-delete">删除</button>
+                </div>
+                <label>
+                  协议
+                  <select id="bind-protocol">
+                    <option value="udp">udp</option>
+                    <option value="tcp">tcp</option>
+                  </select>
+                </label>
+                <label>
+                  绑定名
+                  <input id="bind-name" placeholder="例如 win-rdp" />
+                </label>
+                <label>
+                  远端设备
+                  <input id="bind-peer" placeholder="例如 winpc" />
+                </label>
+                <label>
+                  远端服务
+                  <input id="bind-service" placeholder="例如 rdp" />
+                </label>
+                <label>
+                  本地映射地址
+                  <input id="bind-local" placeholder="例如 127.0.0.1:13389" />
+                </label>
+                <button id="bind-save" class="primary">新增或更新</button>
+              </div>
+              <div class="table-wrap" id="services-current"></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="page" id="page-devices">
+          <article class="card">
+            <p class="eyebrow">在线设备</p>
+            <h3>网络设备与服务视图</h3>
+            <div id="devices-table" class="table-wrap"></div>
+          </article>
+
+          <article class="card">
+            <p class="eyebrow">设备管理</p>
+            <h3>踢出异常节点</h3>
+            <div class="card-grid two compact">
+              <label>
+                设备名称
+                <input id="kick-name" placeholder="例如 winpc" />
+              </label>
+              <label>
+                设备 ID
+                <input id="kick-id" placeholder="例如 dev-123" />
+              </label>
+            </div>
+            <button id="kick-button" class="danger">执行踢出</button>
+          </article>
+        </section>
+
+        <section class="page" id="page-settings">
+          <div class="card-grid two">
+            <article class="card">
+              <p class="eyebrow">连接配置</p>
+              <h3>服务端与监听参数</h3>
+              <div class="stack">
+                <label>
+                  服务端地址
+                  <input id="server-url" placeholder="https://你的公网服务器地址" />
+                </label>
+                <label class="checkbox-row">
+                  <input id="allow-insecure" type="checkbox" />
+                  联调时允许公网 HTTP
+                </label>
+                <label>
+                  设备名称
+                  <input id="device-name" />
+                </label>
+                <label class="checkbox-row">
+                  <input id="auto-connect" type="checkbox" />
+                  打开 GUI 后自动连接
+                </label>
+                <label>
+                  本地 UDP 监听
+                  <input id="udp-listen" />
+                </label>
+                <label>
+                  本地管理地址
+                  <input id="admin-listen" />
+                </label>
+              </div>
+            </article>
+
+            <article class="card">
+              <p class="eyebrow">凭据与系统集成</p>
+              <h3>敏感字段和系统行为</h3>
+              <div class="stack">
+                <label>
+                  组网密码
+                  <input id="password" type="password" placeholder="留空表示不修改" />
+                </label>
+                <label class="checkbox-row">
+                  <input id="clear-password" type="checkbox" />
+                  清空已保存组网密码
+                </label>
+                <p class="muted" id="password-hint"></p>
+
+                <label>
+                  管理密码
+                  <input id="admin-password" type="password" placeholder="留空表示不修改" />
+                </label>
+                <label class="checkbox-row">
+                  <input id="clear-admin-password" type="checkbox" />
+                  清空已保存管理密码
+                </label>
+                <p class="muted" id="admin-password-hint"></p>
+
+                <label>
+                  日志级别
+                  <select id="log-level">
+                    <option value="debug">debug</option>
+                    <option value="info">info</option>
+                    <option value="warn">warn</option>
+                    <option value="error">error</option>
+                  </select>
+                </label>
+
+                <div class="inline-actions">
+                  <button id="apply-log-level">应用日志级别</button>
+                  <button id="install-autostart">安装开机启动</button>
+                  <button id="uninstall-autostart">移除开机启动</button>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page" id="page-diagnostics">
+          <div class="card-grid two">
+            <article class="card">
+              <p class="eyebrow">总览快照</p>
+              <h3>Overview</h3>
+              <pre id="overview-json" class="scroll-block large"></pre>
+            </article>
+            <article class="card">
+              <p class="eyebrow">运行状态</p>
+              <h3>Runtime / Status</h3>
+              <pre id="status-json" class="scroll-block large"></pre>
+            </article>
+          </div>
+          <div class="card-grid two">
+            <article class="card">
+              <p class="eyebrow">网络设备</p>
+              <h3>Network Devices</h3>
+              <pre id="network-json" class="scroll-block large"></pre>
+            </article>
+            <article class="card">
+              <p class="eyebrow">日志</p>
+              <h3>Runtime Logs</h3>
+              <pre id="logs-json" class="scroll-block large"></pre>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

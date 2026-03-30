@@ -18,6 +18,20 @@ mkdir -p "${DIST_DIR}"
 HOST_GOOS="$(go env GOOS)"
 HOST_GOARCH="$(go env GOARCH)"
 
+prepare_wails_frontend() {
+  local frontend_dir="${ROOT_DIR}/internal/wailsapp/frontend"
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm is required to build the Wails frontend" >&2
+    exit 1
+  fi
+  echo "preparing Wails frontend"
+  (
+    cd "${frontend_dir}"
+    npm ci
+    npm run build
+  )
+}
+
 build_one() {
   local goos="$1"
   local goarch="$2"
@@ -38,7 +52,7 @@ build_gui_if_native_host() {
   local pkg="$3"
   local name="$4"
   if [[ "${HOST_GOOS}" != "${goos}" || "${HOST_GOARCH}" != "${goarch}" ]]; then
-    echo "skipping ${name}-${VERSION}-${goos}-${goarch}: native ${goos}/${goarch} build host required for Fyne GUI (current host ${HOST_GOOS}/${HOST_GOARCH})"
+    echo "skipping ${name}-${VERSION}-${goos}-${goarch}: native ${goos}/${goarch} build host required for desktop GUI packaging (current host ${HOST_GOOS}/${HOST_GOARCH})"
     return
   fi
   build_one "${goos}" "${goarch}" "${pkg}" "${name}"
@@ -68,8 +82,8 @@ build_macos_gui_arch() {
     CXX="clang++ -arch ${clang_arch}" \
     CGO_CFLAGS="-arch ${clang_arch}" \
     CGO_CXXFLAGS="-arch ${clang_arch}" \
-    CGO_LDFLAGS="-arch ${clang_arch}" \
-    go build -ldflags "${LDFLAGS}" -o "${out}" ./cmd/snt-gui
+    CGO_LDFLAGS="-arch ${clang_arch} -framework UniformTypeIdentifiers -mmacosx-version-min=10.13" \
+    go build -tags production -ldflags "${LDFLAGS}" -o "${out}" ./cmd/snt-gui
 }
 
 build_macos_universal() {
@@ -104,6 +118,7 @@ build_one linux amd64 ./cmd/snt-server snt-server
 build_one linux amd64 ./cmd/snt snt
 
 if [[ "${HOST_GOOS}" == "darwin" ]]; then
+  prepare_wails_frontend
   build_macos_universal
 else
   echo "skipping macOS DMG packaging: run this script on macOS to build desktop packages"

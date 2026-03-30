@@ -24,6 +24,41 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: internal/wailsapp/frontend/package-lock.json
+
+      - name: Verify Wails frontend assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd internal/wailsapp/frontend
+          npm ci
+          npm run check
+          npm run build
+          cd "${GITHUB_WORKSPACE}"
+          git diff --exit-code -- internal/wailsapp/frontend/dist
+
+      - name: Build macOS GUI smoke binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
+          env \
+            SDKROOT="${sdkroot}" \
+            CGO_ENABLED=1 \
+            GOOS=darwin \
+            GOARCH=arm64 \
+            CC="clang -arch arm64" \
+            CXX="clang++ -arch arm64" \
+            CGO_CFLAGS="-arch arm64" \
+            CGO_CXXFLAGS="-arch arm64" \
+            CGO_LDFLAGS="-arch arm64 -framework UniformTypeIdentifiers -mmacosx-version-min=10.13" \
+            go build -tags production -o /tmp/snt-gui-smoke ./cmd/snt-gui
+
       - name: Run full test suite
         shell: bash
         run: |

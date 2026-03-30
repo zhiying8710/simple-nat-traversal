@@ -38,5 +38,8 @@ func (b *LogBuffer) Write(p []byte) (int, error) {
 func (b *LogBuffer) Snapshot() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(b.lines) == 0 {
+		return []string{}
+	}
 	return append([]string(nil), b.lines...)
 }

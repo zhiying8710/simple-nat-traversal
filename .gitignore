@@ -1,6 +1,9 @@
 .DS_Store
 
-dist/
+/dist/
+/internal/wailsapp/frontend/node_modules/
+!/internal/wailsapp/frontend/dist/
+!/internal/wailsapp/frontend/dist/**
 
 /snt
 /snt-gui

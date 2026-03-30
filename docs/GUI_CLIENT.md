@@ -2,11 +2,11 @@
 
 ## 目标
 
-`snt-gui` 是面向 macOS / Windows 的原生桌面客户端，使用 Fyne 封装现有客户端能力，而不是重新实现一套网络协议。
+`snt-gui` 是面向 macOS / Windows 的原生桌面客户端，使用 Wails 封装现有客户端能力，而不是重新实现一套网络协议。
 
 当前实现采用：
 
-- `Fyne App + 原生窗口 + 分组 Tab UI`
+- `Wails App + 原生 WebView 窗口 + 单页仪表盘 UI`
 - GUI 内部直接调用已有 Go 包完成配置保存、客户端启动/停止、状态获取、网络管理、开机启动管理
 - 不再暴露 localhost HTTP API，也不再依赖浏览器作为壳
 - 支持在没有现成 `client.json` 的情况下直接启动 GUI，首次配置后再保存
@@ -64,8 +64,14 @@
 
 - [cmd/snt-gui/main.go](/Users/zhiying8710/wk/simple-nat-traversal/cmd/snt-gui/main.go)
   GUI 入口
-- [internal/fyneapp/app.go](/Users/zhiying8710/wk/simple-nat-traversal/internal/fyneapp/app.go)
-  Fyne 窗口、表单、Tab 和客户端能力封装
+- [internal/wailsapp/app.go](/Users/zhiying8710/wk/simple-nat-traversal/internal/wailsapp/app.go)
+  Wails backend 绑定与桌面壳
+- [internal/wailsapp/frontend/src/main.ts](/Users/zhiying8710/wk/simple-nat-traversal/internal/wailsapp/frontend/src/main.ts)
+  Wails 前端入口与页面交互
+- [internal/wailsapp/frontend/src/types.ts](/Users/zhiying8710/wk/simple-nat-traversal/internal/wailsapp/frontend/src/types.ts)
+  前后端共享的数据结构定义
+- [internal/desktopapp/service.go](/Users/zhiying8710/wk/simple-nat-traversal/internal/desktopapp/service.go)
+  GUI 无关的应用服务层，负责配置合并、启停、刷新、服务管理和网络动作
 - [internal/control/overview.go](/Users/zhiying8710/wk/simple-nat-traversal/internal/control/overview.go)
   GUI 总览数据层
 - [internal/control/runtime_manager.go](/Users/zhiying8710/wk/simple-nat-traversal/internal/control/runtime_manager.go)
@@ -75,17 +81,50 @@
 
 ## 架构
 
-`cmd/snt-gui` 只负责启动日志、解析配置路径和运行时管理器，然后把窗口交给 `internal/fyneapp`。
+`cmd/snt-gui` 只负责启动日志、解析配置路径和运行时管理器，然后把窗口交给 `internal/wailsapp`。
 
-`internal/fyneapp` 负责：
+`internal/wailsapp` 负责：
 
-- 创建原生窗口
-- 维护连接配置、服务配置和设备管理表单
+- 创建原生 WebView 窗口
+- 绑定 frontend 与 `desktopapp.Service`
+- 通过 embed 打包 `frontend/dist` 静态资源
+
+`internal/desktopapp` 负责：
+
+- 维护连接配置、服务配置和设备管理动作
 - 调用 `RuntimeManager` 启停客户端
 - 通过 `control.LoadOverview` 聚合总览
 - 通过 `client.FetchStatus` / `FetchNetworkDevices` / `KickNetworkDevice` 展示状态和执行网络管理
 - 通过 `autostart` 包安装或移除开机启动
 - 通过在线设备服务列表生成远端服务发现和一键 bind
+
+前端工程位于 `internal/wailsapp/frontend`，当前使用 `TypeScript + Vite`：
+
+- `src/main.ts` 负责页面状态、表单同步和 Wails backend 调用
+- `src/backend.ts` 负责兼容不同 Wails 绑定命名空间
+- `src/types.ts` 负责约束前后端交互数据
+- `src/style.css` 负责 GUI 样式
+
+如果修改了前端源码，需要在仓库根目录执行：
+
+```bash
+cd internal/wailsapp/frontend
+npm install
+npm run build
+```
+
+构建产物会输出到 `internal/wailsapp/frontend/dist`。正式打包建议直接执行：
+
+```bash
+bash ./scripts/build-release.sh <version>
+```
+
+如果需要在 macOS 上直接从源码构建 GUI，需要执行：
+
+```bash
+sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
+SDKROOT="$sdkroot" CGO_ENABLED=1 CGO_LDFLAGS="-framework UniformTypeIdentifiers -mmacosx-version-min=10.13" go build -tags production ./cmd/snt-gui
+```
 
 ## auto_connect 行为
 
@@ -105,4 +144,4 @@
 
 - 增加 GUI 的“应用内通知”和“错误高亮”
 - 增加导入/导出配置
-- 如果后续需要更复杂的桌面交互，可继续在 `internal/fyneapp` 上迭代，而不用改底层网络逻辑
+- 如果后续需要更复杂的桌面交互，可继续在 `internal/wailsapp` 和前端页面上迭代，而不用改底层网络逻辑

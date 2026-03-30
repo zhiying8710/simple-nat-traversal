@@ -34,7 +34,7 @@ try {
   Copy-Item (Join-Path $RootDir "docs/GUI_CLIENT.md") (Join-Path $StageDir "GUI_CLIENT.md")
   Copy-Item (Join-Path $RootDir "examples/client-windows.json") (Join-Path $StageDir "client.example.json")
   Copy-Item (Join-Path $RootDir "scripts/run-gui.ps1") (Join-Path $StageDir "run-gui.ps1")
-  Copy-Item (Join-Path $RootDir "internal/fyneapp/assets/app_icon.ico") (Join-Path $StageDir "app_icon.ico")
+  Copy-Item (Join-Path $RootDir "internal/guiassets/assets/app_icon.ico") (Join-Path $StageDir "app_icon.ico")
 
   $ArchitecturesAllowed = "x64os"
   $OutputBaseName = [System.IO.Path]::GetFileNameWithoutExtension($OutputFile)
@@ -91,6 +91,9 @@ Filename: "{app}\snt-gui.exe"; Description: "Launch Simple NAT Traversal"; Flags
     throw "Inno Setup compiler not found at $iscc"
   }
   & $iscc $IssPath | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "Inno Setup compile failed with exit code $LASTEXITCODE"
+  }
 } finally {
   Remove-Item -Recurse -Force $StageDir -ErrorAction SilentlyContinue
 }
