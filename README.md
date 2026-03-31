@@ -79,6 +79,8 @@
 - 桌面端系统托盘（关窗进托盘、托盘恢复窗口、托盘启停受管 agent、托盘退出）
 - 桌面端自启动管理（macOS `launchd` / Linux XDG autostart / Windows Startup folder）
 - `scripts/package-macos.sh` / `scripts/package-linux.sh` / `scripts/package-windows.ps1` 三套桌面打包脚本
+- `scripts/package-linux-server.sh` Linux 服务端打包脚本
+- GitHub Actions 直接发版工作流（输入版本号后直接创建 Release 并上传 Linux server + macOS/Windows client 包）
 
 已经打通但仍属早期版本：
 
@@ -116,6 +118,8 @@
 - 当前仓库已提供 [`scripts/smoke_direct_only.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/smoke_direct_only.sh)，可以自动复现“target direct-enabled -> source auto forward 选中 direct -> 本地端口成功拉起直连 HTTP / 大 payload”这条更轻的本地回归路径。
 - 当前仓库已提供 [`scripts/smoke_auto_handoff_fallback.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/smoke_auto_handoff_fallback.sh)，可以自动复现“relay-only 起步 -> slow relay drain -> target direct responder 拉起 -> `direct_handoff_fallback` 命中 -> relay drain 完成后回到 `direct_active`”这条本地回归路径。
 - 当前仓库已提供 [`scripts/package-macos.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-macos.sh)、[`scripts/package-linux.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-linux.sh) 和 [`scripts/package-windows.ps1`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-windows.ps1)，分别生成 macOS `.dmg`、Linux `.tar.gz` 和 Windows `.zip` 桌面分发包；目前 macOS/Linux 打包脚本已经做过本地验证，但这些包还没有做签名或公证。
+- 当前仓库还提供 [`scripts/package-linux-server.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-linux-server.sh)，用于生成仅包含 `minipunch-server` 和 systemd 示例单元的 Linux server `.tar.gz` 发布包。
+- 当前仓库已补 [`release.yml`](/Users/zhiying8710/wk/simple-nat-traversal/.github/workflows/release.yml) 手动发版工作流：输入稳定版本号 `x.y.z` 后，会按 `v<version>` 生成 release tag，并先检查现有 tag；若存在更高版本 tag 会直接失败，若存在同版本 tag/release 会先删除，再直接创建 GitHub Release，并分别上传 Linux server、macOS client、Windows client 三个发布包；整个流程不依赖 Actions artifact 中转。
 - 当前 GUI 状态面板已经拆成两部分：一部分是“本地配置 + 网络快照”的派生视图，另一部分是读取 `<config-stem>.runtime.json` 得到的真实本地运行观测。
 - 当前 GUI 读取 runtime state 后，已经能单独展示 `Observed Forward Transports` 和 `Observed Service Transports`，直接看出某条链路当前实际跑在 direct 还是 relay，以及 direct / relay 连接次数、forward 级 active connection count、最近 transport switch、最近对端和最近一次失败阶段。
 - 当前 runtime state 里的 forward state 除了 `relay_active / direct_active / direct_retry_deferred`，还会出现 `direct_ready`、`direct_handoff_fallback` 这类 handoff 过渡状态，用来表示 direct 已经预热完成、正在借旧 relay 兜住单次连接等细节。

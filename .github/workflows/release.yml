@@ -1,0 +1,252 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version number (x.y.z)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.version }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      release_id: ${{ steps.create_release.outputs.release_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Normalize version and guard tags
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          raw_version="${{ github.event.inputs.version }}"
+          version="${raw_version#v}"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version must match x.y.z, got: ${raw_version}" >&2
+            exit 1
+          fi
+
+          tag="v${version}"
+
+          git fetch --tags --force origin
+
+          same_tags=()
+          higher_tags=()
+          while IFS= read -r existing_tag; do
+            [[ -z "${existing_tag}" ]] && continue
+            normalized="${existing_tag#v}"
+            if [[ ! "${normalized}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              continue
+            fi
+
+            IFS='.' read -r existing_major existing_minor existing_patch <<<"${normalized}"
+            IFS='.' read -r desired_major desired_minor desired_patch <<<"${version}"
+
+            if (( existing_major > desired_major )) \
+              || (( existing_major == desired_major && existing_minor > desired_minor )) \
+              || (( existing_major == desired_major && existing_minor == desired_minor && existing_patch > desired_patch )); then
+              higher_tags+=("${existing_tag}")
+            fi
+
+            if [[ "${normalized}" == "${version}" ]]; then
+              same_tags+=("${existing_tag}")
+            fi
+          done < <(git tag --list)
+
+          if (( ${#higher_tags[@]} > 0 )); then
+            printf 'found higher existing tag(s), refusing release for %s:\n' "${version}" >&2
+            printf '  %s\n' "${higher_tags[@]}" >&2
+            exit 1
+          fi
+
+          if (( ${#same_tags[@]} > 0 )); then
+            printf 'deleting same-version tag(s) before release:\n'
+            printf '  %s\n' "${same_tags[@]}"
+            for existing_tag in "${same_tags[@]}"; do
+              gh release delete "${existing_tag}" --cleanup-tag --yes >/dev/null 2>&1 || true
+              git tag -d "${existing_tag}" >/dev/null 2>&1 || true
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${existing_tag}" >/dev/null 2>&1 || true
+            done
+          fi
+
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+          } >> "${GITHUB_OUTPUT}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create draft release
+        id: create_release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_id="$(
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="${{ steps.version.outputs.tag }}" \
+              -f target_commitish="${GITHUB_SHA}" \
+              -f name="${{ steps.version.outputs.tag }}" \
+              -F draft=true \
+              -F generate_release_notes=true \
+              --jq '.id'
+          )"
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build-linux-server:
+    name: Build Linux Server
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build server
+        run: cargo build --release --locked --bin minipunch-server
+
+      - name: Package server
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          out="dist/minipunch-server-linux-${arch}-${{ needs.prepare-release.outputs.version }}.tar.gz"
+          bash scripts/package-linux-server.sh \
+            "${{ needs.prepare-release.outputs.version }}" \
+            "target/release/minipunch-server" \
+            "${out}"
+          echo "asset=${out}" >> "${GITHUB_ENV}"
+
+      - name: Upload release asset
+        run: gh release upload "${{ needs.prepare-release.outputs.tag }}" "${asset}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build-macos-client:
+    name: Build macOS Client
+    needs: prepare-release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build desktop and agent
+        run: cargo build --release --locked --bin minipunch-desktop --bin minipunch-agent
+
+      - name: Package desktop client
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          out="dist/minipunch-desktop-macos-${arch}-${{ needs.prepare-release.outputs.version }}.dmg"
+          bash scripts/package-macos.sh \
+            "${{ needs.prepare-release.outputs.version }}" \
+            "${arch}" \
+            "target/release/minipunch-desktop" \
+            "target/release/minipunch-agent" \
+            "${out}"
+          echo "asset=${out}" >> "${GITHUB_ENV}"
+
+      - name: Upload release asset
+        run: gh release upload "${{ needs.prepare-release.outputs.tag }}" "${asset}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build-windows-client:
+    name: Build Windows Client
+    needs: prepare-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build desktop and agent
+        run: cargo build --release --locked --bin minipunch-desktop --bin minipunch-agent
+
+      - name: Package desktop client
+        shell: pwsh
+        run: |
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") { "x86_64" } else { $env:PROCESSOR_ARCHITECTURE.ToLowerInvariant() }
+          $out = "dist/minipunch-desktop-windows-$arch-${{ needs.prepare-release.outputs.version }}.zip"
+          ./scripts/package-windows.ps1 `
+            -Version "${{ needs.prepare-release.outputs.version }}" `
+            -DesktopBinary "target/release/minipunch-desktop.exe" `
+            -AgentBinary "target/release/minipunch-agent.exe" `
+            -OutZip $out
+          "asset=$out" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload release asset
+        run: gh release upload "${{ needs.prepare-release.outputs.tag }}" "${env:asset}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  publish-release:
+    name: Publish Release
+    needs:
+      - prepare-release
+      - build-linux-server
+      - build-macos-client
+      - build-windows-client
+    runs-on: ubuntu-latest
+    if: ${{ success() }}
+    steps:
+      - name: Publish draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api \
+            --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${{ needs.prepare-release.outputs.release_id }}" \
+            -F draft=false \
+            -f make_latest=true >/dev/null
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  cleanup-failed-release:
+    name: Cleanup Failed Draft Release
+    needs:
+      - prepare-release
+      - build-linux-server
+      - build-macos-client
+      - build-windows-client
+    runs-on: ubuntu-latest
+    if: ${{ failure() && needs.prepare-release.result == 'success' }}
+    steps:
+      - name: Delete failed draft release and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${{ needs.prepare-release.outputs.release_id }}" >/dev/null 2>&1 || true
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${{ needs.prepare-release.outputs.tag }}" >/dev/null 2>&1 || true
+        env:
+          GH_TOKEN: ${{ github.token }}

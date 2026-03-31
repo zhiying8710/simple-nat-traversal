@@ -133,6 +133,8 @@
 - `[done]` 桌面 GUI 补系统托盘，支持关窗进托盘、托盘恢复窗口、托盘启停受管 agent 和托盘退出
 - `[done]` 桌面 GUI 补自启动管理，可为当前配置写入和移除 macOS launchd / Linux XDG autostart / Windows Startup folder 入口
 - `[done]` 补 macOS DMG、Linux tar.gz、Windows zip 三套打包脚本，并完成 macOS DMG / Linux tar.gz 本地脚本验证
+- `[done]` 补 Linux server `.tar.gz` 打包脚本，产出 `minipunch-server` 二进制和 systemd 示例单元
+- `[done]` 补 GitHub Actions 手动发版工作流：输入版本号后先校验 tag 递增关系、删除同版本旧 tag/release，再直接创建 GitHub Release 并上传 Linux server + macOS/Windows client 包
 
 ## 下一批优先任务
 
