@@ -149,6 +149,8 @@
 - `[done]` 补 macOS DMG、Linux tar.gz、Windows zip 三套打包脚本，并完成 macOS DMG / Linux tar.gz 本地脚本验证
 - `[done]` 补 Linux server `.tar.gz` 打包脚本，产出 `minipunch-server` 二进制和 systemd 示例单元
 - `[done]` 补 GitHub Actions 手动发版工作流：输入版本号后先校验 tag 递增关系、删除同版本旧 tag/release，再直接创建 GitHub Release，并在 macOS / Windows client 构建前先执行 `npm ci && npm run build`
+- `[done]` 发版工作流补默认分支限制、Cargo/package.json 版本同步校验，以及 publish 失败后的 draft release/tag 清理闭环
+- `[done]` 发版工作流补 Node/Rust 构建缓存，减少重复发版时的冷启动耗时
 
 ## 下一批优先任务
 

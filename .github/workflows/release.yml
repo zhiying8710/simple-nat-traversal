@@ -22,6 +22,7 @@ jobs:
   prepare-release:
     name: Prepare Release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -95,6 +96,51 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      - name: Validate release branch and version sync
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          default_branch="${{ github.event.repository.default_branch }}"
+          current_branch="${GITHUB_REF_NAME}"
+          if [[ -z "${default_branch}" ]]; then
+            echo "default branch is unavailable in workflow context" >&2
+            exit 1
+          fi
+          if [[ "${current_branch}" != "${default_branch}" ]]; then
+            echo "release workflow must run from ${default_branch}, got ${current_branch}" >&2
+            exit 1
+          fi
+
+          expected_version="${{ steps.version.outputs.version }}"
+          python3 <<'PY'
+          import json
+          import pathlib
+          import tomllib
+          import os
+          import sys
+
+          expected = os.environ["EXPECTED_VERSION"]
+          cargo = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))
+          cargo_version = cargo["workspace"]["package"]["version"]
+          package = json.loads(pathlib.Path("apps/minipunch-desktop/package.json").read_text(encoding="utf-8"))
+          desktop_version = package["version"]
+
+          mismatches = []
+          if cargo_version != expected:
+              mismatches.append(f"Cargo.toml workspace.package.version={cargo_version}")
+          if desktop_version != expected:
+              mismatches.append(f"apps/minipunch-desktop/package.json version={desktop_version}")
+
+          if mismatches:
+              print(f"release version {expected} does not match repository metadata:", file=sys.stderr)
+              for mismatch in mismatches:
+                  print(f"  - {mismatch}", file=sys.stderr)
+              sys.exit(1)
+          PY
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+
       - name: Create draft release
         id: create_release
         shell: bash
@@ -119,12 +165,16 @@ jobs:
     name: Build Linux Server
     needs: prepare-release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Build server
         run: cargo build --release --locked --bin minipunch-server
@@ -150,12 +200,23 @@ jobs:
     name: Build macOS Client
     needs: prepare-release
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/minipunch-desktop/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: apps/minipunch-desktop
@@ -191,12 +252,23 @@ jobs:
     name: Build Windows Client
     needs: prepare-release
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/minipunch-desktop/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: apps/minipunch-desktop
@@ -234,6 +306,7 @@ jobs:
       - build-macos-client
       - build-windows-client
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: ${{ success() }}
     steps:
       - name: Publish draft release
@@ -255,8 +328,19 @@ jobs:
       - build-linux-server
       - build-macos-client
       - build-windows-client
+      - publish-release
     runs-on: ubuntu-latest
-    if: ${{ failure() && needs.prepare-release.result == 'success' }}
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        (
+          needs.build-linux-server.result != 'success' ||
+          needs.build-macos-client.result != 'success' ||
+          needs.build-windows-client.result != 'success' ||
+          needs.publish-release.result == 'failure'
+        )
+      }}
     steps:
       - name: Delete failed draft release and tag
         shell: bash
