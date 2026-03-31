@@ -157,6 +157,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install frontend dependencies
+        working-directory: apps/minipunch-desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/minipunch-desktop
+        run: npm run build
+
       - name: Build desktop and agent
         run: cargo build --release --locked --bin minipunch-desktop --bin minipunch-agent
 
@@ -189,6 +197,14 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: apps/minipunch-desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/minipunch-desktop
+        run: npm run build
 
       - name: Build desktop and agent
         run: cargo build --release --locked --bin minipunch-desktop --bin minipunch-agent

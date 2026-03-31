@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "apps/minipunch-agent", "apps/minipunch-desktop",
+    "apps/minipunch-agent", "apps/minipunch-desktop/src-tauri",
     "apps/minipunch-server",
     "crates/minipunch-agent",
     "crates/minipunch-core",

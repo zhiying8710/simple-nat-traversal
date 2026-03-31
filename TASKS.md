@@ -132,9 +132,23 @@
 - `[done]` 为 direct keepalive / peer idle timeout 补纯逻辑单元测试，并通过轻量 direct 回归验证
 - `[done]` 桌面 GUI 补系统托盘，支持关窗进托盘、托盘恢复窗口、托盘启停受管 agent 和托盘退出
 - `[done]` 桌面 GUI 补自启动管理，可为当前配置写入和移除 macOS launchd / Linux XDG autostart / Windows Startup folder 入口
+- `[done]` 桌面 GUI 重构为多 tab 布局，按总览 / 控制面 / 已发布服务 / 转发规则 / 在线设备 / 输出分组，避免单页过度拥挤
+- `[done]` 桌面 GUI 为加载配置、保存配置、加入网络、刷新状态、同步服务等操作补统一 loading 和结果提示
+- `[done]` 桌面 GUI 启动时忽略上次关闭遗留的 terminal / stale runtime state，避免重启后继续显示旧运行观测
+- `[done]` 桌面 GUI 增加在线设备页，列出当前在线设备及其已发布服务，并支持一键生成本地转发草稿
+- `[done]` 桌面 GUI 统一把控制面和运行态时间显示格式化为 `YYYY-MM-DD HH:MM:SS`
+- `[done]` 桌面 GUI 增加独立“日志”页，集中展示运行观测、链路统计、最近事件和最近一次动作输出
+- `[done]` 桌面 GUI 把“输出”页改成“原始配置”页，可直接查看当前配置文件原文
+- `[done]` 桌面 GUI 把设备 / 会话 / 已发布 / 转发 / 受管运行 / 运行观测摘要移动到总览页，移除顶部重复摘要
+- `[done]` 桌面端已从 `eframe/egui` 迁移到 `Tauri + Vue`：前端改为多 tab WebView 界面，后端改为 Tauri Rust command + tray/autostart 集成
+- `[done]` 补桌面端图标资源链路：生成 PNG / ICNS / ICO，并接入 macOS `.app` 包和 Windows 可执行文件资源
+- `[done]` Windows 桌面端启用 `windows_subsystem = \"windows\"`，正常启动不再弹出 cmd 窗口
+- `[done]` Windows 自启动入口从 Startup folder `.cmd` 改为隐藏式 `.vbs` launcher，并补本地单元测试覆盖
+- `[done]` Windows 自启动入口改用专用 `--autostart` 后台启动模式，登录后会自动拉起受管 agent
+- `[done]` Windows 自启动在启动受管 agent 前补配置预检；若当前配置未完成入网或缺少身份材料，会直接退出进程而不是残留隐藏后台
 - `[done]` 补 macOS DMG、Linux tar.gz、Windows zip 三套打包脚本，并完成 macOS DMG / Linux tar.gz 本地脚本验证
 - `[done]` 补 Linux server `.tar.gz` 打包脚本，产出 `minipunch-server` 二进制和 systemd 示例单元
-- `[done]` 补 GitHub Actions 手动发版工作流：输入版本号后先校验 tag 递增关系、删除同版本旧 tag/release，再直接创建 GitHub Release 并上传 Linux server + macOS/Windows client 包
+- `[done]` 补 GitHub Actions 手动发版工作流：输入版本号后先校验 tag 递增关系、删除同版本旧 tag/release，再直接创建 GitHub Release，并在 macOS / Windows client 构建前先执行 `npm ci && npm run build`
 
 ## 下一批优先任务
 

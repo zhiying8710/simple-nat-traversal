@@ -1,0 +1,20 @@
+[package]
+name = "minipunch-desktop"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+hostname.workspace = true
+minipunch-agent = { path = "../../../crates/minipunch-agent" }
+minipunch-core = { path = "../../../crates/minipunch-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.9.5", features = ["custom-protocol", "image-png", "tray-icon"] }
+tokio.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.5.3" }
+winres = "0.1.12"

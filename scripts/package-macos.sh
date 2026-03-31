@@ -16,10 +16,15 @@ ARCH_LABEL="$2"
 DESKTOP_BIN="$3"
 AGENT_BIN="$4"
 OUT_DMG="$5"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ICON_ICNS="${REPO_ROOT}/apps/minipunch-desktop/assets/AppIcon.icns"
 
 APP_NAME="MiniPunch Desktop"
 APP_BUNDLE="${APP_NAME}.app"
 EXECUTABLE_NAME="MiniPunch Desktop"
+ICON_NAME="AppIcon.icns"
+ICON_FILE_STEM="AppIcon"
 TMP_DIR="$(mktemp -d)"
 STAGE_DIR="${TMP_DIR}/stage"
 APP_DIR="${STAGE_DIR}/${APP_BUNDLE}"
@@ -39,6 +44,11 @@ cp "${DESKTOP_BIN}" "${MACOS_DIR}/${EXECUTABLE_NAME}"
 chmod +x "${MACOS_DIR}/${EXECUTABLE_NAME}"
 cp "${AGENT_BIN}" "${BIN_DIR}/minipunch-agent"
 chmod +x "${BIN_DIR}/minipunch-agent"
+if [[ -f "${ICON_ICNS}" ]]; then
+  cp "${ICON_ICNS}" "${RESOURCES_DIR}/${ICON_NAME}"
+fi
+
+xattr -cr "${APP_DIR}" >/dev/null 2>&1 || true
 
 cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -59,6 +69,8 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <string>APPL</string>
   <key>CFBundleExecutable</key>
   <string>${EXECUTABLE_NAME}</string>
+  <key>CFBundleIconFile</key>
+  <string>${ICON_FILE_STEM}</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
 </dict>
@@ -73,10 +85,17 @@ Contents:
 - embedded minipunch-agent CLI: ${APP_BUNDLE}/Contents/Resources/bin/minipunch-agent
 
 Notes:
-- This build is not code-signed or notarized.
-- On first launch, macOS may require right-click -> Open.
+- This build is ad-hoc signed locally, but it is not notarized.
+- On first launch, macOS may still require right-click -> Open or manual quarantine removal.
 - Autostart uses ~/Library/LaunchAgents/${APP_NAME// /-}.plist at runtime.
 README
+
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --sign - --timestamp=none "${BIN_DIR}/minipunch-agent"
+  codesign --force --sign - --timestamp=none "${MACOS_DIR}/${EXECUTABLE_NAME}"
+  codesign --force --deep --sign - --timestamp=none "${APP_DIR}"
+  codesign --verify --deep --strict --verbose=2 "${APP_DIR}" >/dev/null
+fi
 
 ln -s /Applications "${STAGE_DIR}/Applications"
 

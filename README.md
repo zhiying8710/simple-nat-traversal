@@ -89,18 +89,25 @@
 
 说明：
 
-- 当前 GUI 为 `eframe/egui` 配置工作台，已经能加载配置文件、编辑多条 publish / forward 规则、保存回磁盘，并把当前 publish 配置同步到控制面。
+- 当前 GUI 已迁移为 `Tauri + Vue` 桌面端，页面结构按总览 / 控制面 / 已发布服务 / 转发规则 / 在线设备 / 日志 / 原始配置拆分，底层继续复用现有 `core / server / agent` Rust 分层。
 - 当前 GUI 已经可以为 published service 配置 direct responder 参数，也可以为 forward rule 配置 `relay / auto` 传输策略、UDP bind、candidate type 和 direct wait seconds。
 - 当前 GUI 已经支持 `Refresh Status`，会结合本地配置和网络快照展示设备在线情况、服务是否已同步、forward 规则是否 ready / target_offline / service_missing。
+- 当前 GUI 已经按总览 / 控制面 / 已发布服务 / 转发规则 / 在线设备 / 日志 / 原始配置拆成多个 tab，不再把所有编辑和观测内容堆在同一页。
+- 当前 GUI 现在进一步拆成总览 / 控制面 / 已发布服务 / 转发规则 / 在线设备 / 日志 / 原始配置 7 个 tab；运行观测、链路统计和最近事件集中放到“日志”页，配置文件原文放到“原始配置”页。
+- 当前 GUI 对“加载配置 / 保存配置 / 加入网络 / 发送心跳 / 读取网络 / 刷新状态 / 同步服务”等动作补了统一 loading 和结果提示，执行期间会禁用相关按钮并在界面顶部显示完成结果。
 - 当前 GUI 已经可以启动、停止桌面端自己拉起的受管 `minipunch-agent run` 任务，并显示这个受管任务的运行态。
 - 当前 GUI 已经补了系统托盘；如果托盘可用，关窗会默认转成“隐藏到托盘”，并可以从托盘恢复窗口、启停受管 agent、切换自启动或退出程序。
-- 当前桌面端支持 `--background --start-agent --config <path>` 启动参数，供自启动入口在登录后以后台模式拉起受管 agent。
+- 当前桌面端支持 `--autostart --config <path>` 启动参数；自启动入口会用它在登录后以后台模式拉起受管 agent，同时仍兼容旧的 `--background --start-agent --config <path>` 入口。
 - 当前任意本地 `minipunch-agent run` 只要使用同一份配置，都会持续刷新同目录下的 `<config-stem>.runtime.json`；GUI 会读取它来展示真实运行状态、最近心跳、重启原因和最近事件。
+- 当前 GUI 在启动时会忽略上次关闭遗留的 terminal / stale runtime state，避免仅仅重开桌面端时仍把旧的本地运行观测当成“当前正在运行”。
+- 当前 GUI 新增了在线设备页：会基于最近一次 network snapshot 列出在线设备和它们已发布的服务，并支持一键生成本地 forward 草稿，再跳转到转发规则页继续调整。
+- 当前 GUI 会把界面上展示的控制面时间、运行态时间和事件时间统一格式化成 `YYYY-MM-DD HH:MM:SS`，不再直接显示 Unix 时间戳。
+- 当前总览页会集中展示设备 / 会话 / 已发布 / 转发 / 受管运行 / 运行观测摘要，顶部不再重复堆相同信息。
 - 当前 `<config-stem>.runtime.json` 还会记录每条 enabled forward rule 和每个 published service 的运行态观测，包括 configured transport、active transport、当前 state、最近错误、direct attempt / relay fallback 次数、direct / relay 连接计数、forward 级 active connection count、最近对端，以及最近一次失败落在哪个阶段（如 `rendezvous_wait`、`probe`、`channel_open`、`data_plane`）。
 - 当前 published service 侧还会记录 `active_session_count`，用于表示当前有多少条 direct session 正在活跃；GUI 的 `Observed Service Transports` 也会直接展示这个值。
 - 当前 `<config-stem>.runtime.json` 对 direct 链路还会额外记录最近一次活跃 direct channel 的运行指标，例如 `cwnd`、`ssthresh`、`RTO`、smoothed RTT、待发/待收分片数、是否处于 fast recovery，以及 keepalive 发包/回包计数；GUI 的 `Observed Forward Transports` / `Observed Service Transports` 也会直接显示这些值。
-- 当前 GUI 可以为当前配置直接启用或禁用自启动；它会按平台写入 macOS `~/Library/LaunchAgents/minipunch-desktop.plist`、Linux `~/.config/autostart/minipunch-desktop.desktop` 或 Windows Startup folder 下的 `minipunch-desktop.cmd`。
-- 如果后续要严格切回设计文档里推荐的 `Tauri`，现有 `core / server / agent` 分层可以直接复用。
+- 当前 GUI 可以为当前配置直接启用或禁用自启动；它会按平台写入 macOS `~/Library/LaunchAgents/minipunch-desktop.plist`、Linux `~/.config/autostart/minipunch-desktop.desktop` 或 Windows Startup folder 下的 `minipunch-desktop.vbs`。
+- 当前桌面端目录结构已经切成标准 `Tauri` 形态：前端在 [`apps/minipunch-desktop/src`](/Users/zhiying8710/wk/simple-nat-traversal/apps/minipunch-desktop/src)，后端在 [`apps/minipunch-desktop/src-tauri`](/Users/zhiying8710/wk/simple-nat-traversal/apps/minipunch-desktop/src-tauri)，发布时需要先执行前端构建，再编译 `minipunch-desktop`。
 - 当前 relay 数据面已经对 `ChannelData` 做了设备到设备加密，`TLS/WebSocket` 仍作为传输层保护；同时 relay writer 现在会把多条 envelope batched 进单个 WebSocket frame，降低高频小包时的帧开销。
 - 当前服务真实 `target host/port` 已不再上送控制面，也不会出现在 network snapshot 或 relay open 流程里；target 侧 relay/direct responder 都改为按 `service_id` 在本地配置里解析真实落点。
 - 当前服务名、ACL、源/目标设备 ID、rendezvous 候选地址等 relay 协调元数据仍对 VPS 可见。
@@ -117,7 +124,10 @@
 - 当前仓库已提供 [`scripts/check_direct_regressions.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/check_direct_regressions.sh)，作为更轻的 direct 回归入口：默认跑纯逻辑 direct 测试和 `cargo check --workspace`，设置 `RUN_DIRECT_SMOKE=1` 可串上纯直连 smoke，设置 `RUN_HANDOFF_SMOKE=1` 时再串上完整 handoff smoke。
 - 当前仓库已提供 [`scripts/smoke_direct_only.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/smoke_direct_only.sh)，可以自动复现“target direct-enabled -> source auto forward 选中 direct -> 本地端口成功拉起直连 HTTP / 大 payload”这条更轻的本地回归路径。
 - 当前仓库已提供 [`scripts/smoke_auto_handoff_fallback.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/smoke_auto_handoff_fallback.sh)，可以自动复现“relay-only 起步 -> slow relay drain -> target direct responder 拉起 -> `direct_handoff_fallback` 命中 -> relay drain 完成后回到 `direct_active`”这条本地回归路径。
-- 当前仓库已提供 [`scripts/package-macos.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-macos.sh)、[`scripts/package-linux.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-linux.sh) 和 [`scripts/package-windows.ps1`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-windows.ps1)，分别生成 macOS `.dmg`、Linux `.tar.gz` 和 Windows `.zip` 桌面分发包；目前 macOS/Linux 打包脚本已经做过本地验证，但这些包还没有做签名或公证。
+- 当前仓库已提供 [`scripts/package-macos.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-macos.sh)、[`scripts/package-linux.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-linux.sh) 和 [`scripts/package-windows.ps1`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-windows.ps1)，分别生成 macOS `.dmg`、Linux `.tar.gz` 和 Windows `.zip` 桌面分发包；其中 macOS 包现在会做本地 ad-hoc 签名，macOS/Linux 打包脚本也都做过本地验证，但这些包仍未做 Apple notarization 或正式发行级签名。
+- 当前仓库已补桌面端图标资源链路：[`icon.svg`](/Users/zhiying8710/wk/simple-nat-traversal/apps/minipunch-desktop/assets/icon.svg) 作为源文件，经 [`generate-desktop-icons.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/generate-desktop-icons.sh) 生成 PNG / ICNS / ICO；macOS `.app` 会携带 `AppIcon.icns`，Windows 可执行文件在构建时会嵌入 `AppIcon.ico`。
+- 当前 Windows 桌面端已经启用 GUI 子系统，正常启动不再弹出 cmd 窗口；Windows 自启动入口也从 Startup folder 的 `.cmd` 改成了隐藏式 `.vbs` launcher，并会在登录后自动拉起受管 agent。
+- 当前 Windows 自启动在进入后台前会先做配置预检；如果当前配置还没完成入网、缺少设备身份材料，或关键字段不完整，桌面端会直接退出进程，不会残留一个隐藏但不可用的托盘进程。
 - 当前仓库还提供 [`scripts/package-linux-server.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-linux-server.sh)，用于生成仅包含 `minipunch-server` 和 systemd 示例单元的 Linux server `.tar.gz` 发布包。
 - 当前仓库已补 [`release.yml`](/Users/zhiying8710/wk/simple-nat-traversal/.github/workflows/release.yml) 手动发版工作流：输入稳定版本号 `x.y.z` 后，会按 `v<version>` 生成 release tag，并先检查现有 tag；若存在更高版本 tag 会直接失败，若存在同版本 tag/release 会先删除，再直接创建 GitHub Release，并分别上传 Linux server、macOS client、Windows client 三个发布包；整个流程不依赖 Actions artifact 中转。
 - 当前 GUI 状态面板已经拆成两部分：一部分是“本地配置 + 网络快照”的派生视图，另一部分是读取 `<config-stem>.runtime.json` 得到的真实本地运行观测。
@@ -213,6 +223,10 @@ cargo run --bin minipunch-agent -- run
 启动桌面壳：
 
 ```bash
+cd apps/minipunch-desktop
+npm install
+npm run build
+cd ../..
 cargo run --bin minipunch-desktop
 ```
 
@@ -226,6 +240,15 @@ cargo run --bin minipunch-desktop
 6. 刷新派生状态视图，查看设备 / service / forward 的当前健康状态
 7. 启动和停止桌面端受管的本地 `run` 任务
 8. 读取本地 runtime state 文件，查看最近心跳、重启原因和运行事件
+9. 使用系统托盘控制窗口显示、受管 Agent 和开机自启
+
+桌面端开发期常用命令：
+
+```bash
+cd apps/minipunch-desktop
+npm install
+npm run tauri:dev
+```
 
 ## Direct Rendezvous
 
