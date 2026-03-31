@@ -1,7 +1,0 @@
-{
-  "http_listen": ":8080",
-  "udp_listen": ":3479",
-  "public_udp_addr": "YOUR_VPS_PUBLIC_IP:3479",
-  "password": "replace-with-your-own-strong-password",
-  "admin_password": "replace-with-a-separate-admin-password"
-}

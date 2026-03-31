@@ -1,13 +1,10 @@
-.DS_Store
+/target
+/.idea
+/.vscode
+/.DS_Store
+*.db
+*.db-shm
+*.db-wal
+*.log
+dist/
 
-/dist/
-/internal/wailsapp/frontend/node_modules/
-!/internal/wailsapp/frontend/dist/
-!/internal/wailsapp/frontend/dist/**
-
-/snt
-/snt-gui
-/snt-server
-/*.exe
-/*.test
-.gocache

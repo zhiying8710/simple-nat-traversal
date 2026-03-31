@@ -1,247 +1,145 @@
-# Task List
+# MiniPunch Tasks
 
-用于跟踪 `simple-nat-traversal` 的开发进度。
+本文件用于持续跟踪当前实现状态，后续开发会及时更新。
 
-更新时间：`2026-03-29`
+## 状态说明
 
-## 状态约定
+- `[done]` 已完成并至少做过一次本地验证
+- `[doing]` 正在进行
+- `[next]` 下一批优先任务
+- `[later]` 明确要做，但不在最近一批
 
-- `[x]` 已完成
-- `[>]` 进行中
-- `[ ]` 待做
-- `[!]` 风险 / 阻塞 / 需要特别关注
+## 当前阶段
 
-## 目标更新（2026-03-29）
-
-- 新目标：在现有 UDP 打洞组网基础上，支持把远端设备上的 UDP + TCP 服务暴露给其他设备访问，重点覆盖 Windows RDP、SSH 这类 TCP 服务场景。
-- 推荐实现假设：继续使用 UDP 完成 NAT 打洞和 peer 会话建立，然后在现有加密 P2P 通道里承载 TCP 字节流。
-- 适用前提：TCP 服务可用性依赖双方 UDP 打洞先成功；当前仍不引入 relay，也不做虚拟网卡。
-
-## 当前进度概览
-
-- 当前阶段：`UDP + TCP 主链路、本地重连验证、GUI 重构与收尾已补齐，进入公网联调阶段`
-- 当前重点：`准备真实公网联调，记录 UDP 打洞命中情况与 TCP 转发表现`
-- 当前边界：
-  - 单密码
-  - 单逻辑网络
-  - UDP 打洞建立加密 P2P 会话
-  - 支持远端 UDP + TCP 服务暴露
-  - TCP 服务通过现有 UDP P2P 通道转发
-  - 不支持中继
-  - 不做虚拟网卡
-- 当前已知缺口：
-  - 真实公网环境下的打洞与 TCP 转发仍待专项实测
+- `[doing]` 核心数据面、桌面交付和打包脚本已收敛，进入验收与后续产品化打磨阶段
 
 ## 已完成
 
-### 架构与协议
+- `[done]` 清空旧仓库代码并重建为新项目结构
+- `[done]` 完成总体设计文档
+- `[done]` 建立 Rust workspace、shared core、server、agent、desktop 壳
+- `[done]` 完成设备身份生成、签名注册、Join Token 入网
+- `[done]` 完成控制面 SQLite 存储、设备列表、网络快照、服务发布
+- `[done]` 完成 relay-only WebSocket 数据面
+- `[done]` 完成本地 TCP 监听到远端已发布 TCP 服务的 relay 转发
+- `[done]` 完成 relay 数据面的本地端到端 HTTP 冒烟测试
+- `[done]` forward 规则持久化到 Agent 配置文件
+- `[done]` 完成 `minipunch-agent run` 单进程常驻模式
+- `[done]` 完成 `add-forward + run` 工作流的本地端到端冒烟测试
+- `[done]` relay 数据面补设备到设备的端到端加密（业务字节流）
+- `[done]` 完成加密 relay 数据面的本地端到端 HTTP 冒烟测试
+- `[done]` 为 Agent 常驻模式补更稳的重连与失败恢复
+- `[done]` 完成“有效 forward 规则可用、无效规则后台重试且不拖垮 run 进程”的本地冒烟测试
+- `[done]` 桌面 GUI 支持读取、编辑、保存 publish / forward 配置
+- `[done]` 桌面 GUI 支持把当前 publish 配置同步到控制面
+- `[done]` CLI `status` 输出升级为配置加网络快照的派生状态报告
+- `[done]` 桌面 GUI 支持刷新状态，并展示设备在线情况、服务同步情况和 forward 规则解析状态
+- `[done]` 桌面 GUI 支持启动、停止并展示受管的本地 `minipunch-agent run` 任务状态
+- `[done]` `minipunch-agent run` 持续写入本地 runtime state 文件，记录心跳、重启原因和最近事件
+- `[done]` 桌面 GUI 接入真实本地 `run` 状态文件，可观测外部 CLI 或桌面受管任务的运行状态
+- `[done]` 桌面 GUI 展示最近运行事件、最后一次重启原因和最近心跳时间
+- `[done]` 控制面补 direct rendezvous 协调接口，可创建尝试、轮询 pending、提交和查询 UDP 候选地址
+- `[done]` Agent/CLI 接入 direct rendezvous 最小工作流，支持 `rendezvous-start / pending / announce / get`
+- `[done]` 完成 direct rendezvous 协调链路的本地双设备冒烟测试
+- `[done]` Agent 侧创建真实 UDP socket，基于 rendezvous 候选地址发送签名 `hello/ack` 探测包
+- `[done]` CLI 新增 `direct-probe`，可在 ready 的 rendezvous 上执行最小打洞探测并选出可达 peer candidate
+- `[done]` 完成 direct UDP probe 的本地双设备冒烟测试
+- `[done]` CLI 新增 `direct-connect / direct-serve`，可自动完成 start / announce / probe 工作流
+- `[done]` 完成 `direct-serve + direct-connect` 的本地自动化冒烟测试
+- `[done]` CLI 新增 `direct-tcp-forward / direct-tcp-serve`，可把本地 TCP 流通过 direct UDP channel 代理到远端已发布服务
+- `[done]` 完成 direct UDP TCP 代理数据面的本地 HTTP 端到端冒烟测试
+- `[done]` 在 agent 侧增加 `auto-forward / auto-serve`，统一 direct / relay 候选链路选择
+- `[done]` 为 direct 尝试补超时和失败回落 relay 的状态机
+- `[done]` 完成“目标仅提供 relay 服务时，source auto-forward 超时后自动切 relay 并跑通 HTTP”的本地冒烟测试
+- `[done]` 把 `auto-forward / auto-serve` 收编进 `run` 的配置驱动模式
+- `[done]` 给桌面 GUI 增加 direct/relay 传输策略、UDP bind、candidate type 和 direct wait 配置入口
+- `[done]` 完成“两端都跑 run，source 规则配置为 transport=auto，最终选中 direct 并跑通 HTTP”的本地冒烟测试
+- `[done]` 给 direct TCP 数据面补最小可靠层：顺序号、累计 ack、stop-and-wait 重传和 close-ack 关闭握手
+- `[done]` 完成带最小可靠层的 direct `run` 模式本地 HTTP 端到端冒烟测试
+- `[done]` 把 direct TCP 数据面从 stop-and-wait 提升到固定窗口发送，支持多包并发在途、累计 ack 和 go-back-N 式重传
+- `[done]` 完成大于 8 个分片的 direct 大 payload 本地端到端冒烟测试
+- `[done]` 把 direct TCP 数据面从固定窗口提升到自适应窗口，按 ack 顺畅度加性增大、按超时重传乘性减小
+- `[done]` 完成自适应窗口 direct 大 payload 本地回归验证
+- `[done]` 为 direct 数据面补 RTT 感知重传超时，按成功 ack 样本收敛 RTO，并在超时后退避
+- `[done]` 完成 RTT 感知重传下的 direct 大 payload 本地回归验证
+- `[done]` 为 direct 数据面补基于重复 ACK 的快速重传，避免一部分丢包只能等超时
+- `[done]` 为快速重传补纯逻辑单元测试，并完成 direct 大 payload 本地回归验证
+- `[done]` 为 direct 接收侧补乱序密文缓冲，缺包补到后可连续释放后续已到达分片，减少单点丢包引发的连锁超时
+- `[done]` 为接收侧乱序缓冲补纯逻辑单元测试，并完成 direct 大 payload 本地回归验证
+- `[done]` 为 direct 发送侧补更成熟的拥塞控制和快速恢复，加入 slow start / congestion avoidance / fast recovery
+- `[done]` 为 Reno 风格窗口控制补纯逻辑单元测试，并完成 direct 大 payload 本地回归验证
+- `[done]` 为 direct 超时恢复收敛重传范围，改为优先补发最老的超时 outstanding 分片，避免单次超时触发整批重发
+- `[done]` 为最老超时分片优先重传补纯逻辑单元测试，并完成 direct 大 payload 本地回归验证
+- `[done]` runtime state 补 direct 通道运行指标观测，可记录最近一次活跃 direct channel 的 cwnd / ssthresh / RTO / pending packets / fast recovery
+- `[done]` 桌面 GUI 接入 direct 指标观测，展示 direct_metrics
+- `[done]` 完成“限速 direct 传输中，source/target runtime JSON 能读到 direct_metrics”的本地验证
+- `[done]` runtime state 补 forward/service 级 transport 观测，可区分 configured transport 和 active transport
+- `[done]` 桌面 GUI 接入 runtime transport 观测，展示 `Observed Forward Transports` 和 `Observed Service Transports`
+- `[done]` 完成“读取 runtime state 文件即可看出某条规则当前跑在 direct、某个 service 当前处于 direct responder”的本地验证
+- `[done]` runtime state 补 forward/service 级连接计数，可记录 direct attempt、relay fallback、direct/relay connection 次数和最近对端
+- `[done]` 桌面 GUI 接入连接级 runtime 观测，展示 direct/relay 连接次数、最近 transport switch 和最近对端
+- `[done]` 完成“同一轮本地联调里分别打 relay 和 direct 流量后，runtime JSON 正确累加连接计数”的本地验证
+- `[done]` runtime state 补 auto transport 的分阶段失败观测，可区分 rendezvous start / rendezvous wait / peer lookup / probe / channel open / data plane
+- `[done]` 桌面 GUI 接入分阶段失败观测，展示最近一次失败的 transport、stage、时间和错误文本
+- `[done]` 完成“目标不在线时，source runtime JSON 正确记录 last_failure_stage=rendezvous_wait”的本地验证
+- `[done]` auto transport 在 relay fallback 期间按退避节奏继续重试 direct，不再一直卡在 relay 直到 relay 自己断开
+- `[done]` relay 连接在 auto 重新选路时补安全清理，避免丢下残留后台 websocket 任务
+- `[done]` 完成“relay-only 目标端下，source 的 direct_attempt_count 持续增长且本地 auto 入口仍可返回 HTTP 200”的本地验证
+- `[done]` auto transport 在 relay 仍有活跃连接时延后 direct 重试，等 relay 空闲并经过短暂 idle grace 后再回切
+- `[done]` runtime state 补 forward 级 active_connection_count / last_connection_opened_at / last_connection_closed_at
+- `[done]` 桌面 GUI 接入 forward 级活跃连接观测，展示 active_conn 和最近连接开闭时间
+- `[done]` 完成“活跃 relay 连接期间进入 direct_retry_deferred，连接关闭后恢复 direct 重试”的本地验证
+- `[done]` auto transport 在 relay idle 时先 prewarm direct，再切本地 listener 到 direct，缩小 idle handoff 抖动窗口
+- `[done]` runtime state 补 `direct_ready` 这类 handoff 过渡状态，能看出 direct 已预热但还没切 listener
+- `[done]` 完成“source 先落到 relay，target 之后开启 direct，source 记录 direct_ready -> direct_active 并继续返回 HTTP 200”的本地验证
+- `[done]` source 侧 `auto` forward 收敛为单 listener / 统一 ingress，relay/direct handoff 不再重新 bind 本地端口
+- `[done]` relay/direct 本地单连接桥接入口抽成可复用接口，供 `auto` listener 直接分发
+- `[done]` 完成“relay -> direct handoff 前后，source 的 `127.0.0.1:19110` 保持同一监听 FD，并在切换后继续返回 direct HTTP 200”的本地验证
+- `[done]` auto transport 在 relay 仍有活跃连接时也能后台 prewarm direct，不再必须先等 relay 完全 idle 才开始直连准备
+- `[done]` 完成“source 在 `active_connection_count=1` 时记录 `prewarming direct rendezvous in parallel`，随后切到 direct 并继续返回 HTTP 200”的本地验证
+- `[done]` target 侧 direct service supervisor 不再串行卡住单条 rendezvous；已有 direct attempt 在跑时，新的 attempt 可并发进入 direct probe
+- `[done]` runtime state / GUI 为 published service 补 `active_session_count`，可看出当前有多少条 direct session 处于活跃态
+- `[done]` target 侧 direct responder 收敛为 shared UDP hub：同一个 `direct_udp_bind_addr` 可并发承接多条 rendezvous，不再依赖同 IP 临时 UDP 端口
+- `[done]` 完成“同一时刻连发两条 pending rendezvous，target 两条都通过 `127.0.0.1:41112` 并发进入 direct probe”的本地验证
+- `[done]` auto transport 在 relay drain 期间补 per-connection handoff fallback：若新连接在 direct `channel_open` 前失败，可就地回落到仍存活的 relay
+- `[done]` 为 handoff fallback 补“pre-bridge 失败时保留原始 socket”的单元测试
+- `[done]` `direct-tcp-serve` 改成遇到失败 rendezvous 后继续轮询后续 attempt，不再一条失败就整进程退出
+- `[done]` 补 `scripts/smoke_auto_handoff_fallback.sh`，可自动完成 relay-only 起步、slow relay drain、target direct responder 拉起、`direct_handoff_fallback` 命中和最终 sole ingress 验证
+- `[done]` 完成“active relay drain 期间 source 命中 `direct_handoff_fallback`，relay drain 完成后回到 `direct_active`”的本地端到端冒烟测试
+- `[done]` 为 direct `ChannelAck` 增加少量 SACK 序号，让发送侧可 selectively 清理已乱序到达的 outstanding 分片，减少对尾部分片的重复补发
+- `[done]` 为 SACK selective recovery 补纯逻辑单元测试，并完成 handoff smoke 回归验证
+- `[done]` 补 `scripts/check_direct_regressions.sh` 作为更轻的 direct 回归入口，默认跑纯逻辑 direct 测试和 `cargo check --workspace`，需要时再通过 `RUN_HANDOFF_SMOKE=1` 串上完整 handoff smoke
+- `[done]` 让 direct 恢复逻辑把“单个 ACK 里新出现的 SACK 证据”也计入 fast retransmit 判定，不必总是等 3 个独立重复 ACK 包
+- `[done]` 为 SACK 证据累计补纯逻辑单元测试，并通过轻量 direct 回归脚本复验
+- `[done]` 把 direct `ChannelAck` 的离散 SACK 序号压缩成连续 range，减少 ACK 包体并为后续 scoreboard 打基础
+- `[done]` 为 SACK range 压缩补纯逻辑单元测试，并完成轻量 direct 回归与 handoff smoke 回归验证
+- `[done]` sender 侧补显式 SACK scoreboard，统一 ACK range 的合并、累计前移和 selective-acked 查询，给后续更细的 selective retransmit 打基础
+- `[done]` 为 sender-side SACK scoreboard 补纯逻辑单元测试，并完成轻量 direct 回归与 handoff smoke 回归验证
+- `[done]` duplicate ACK 证据足够多时，sender 可沿 scoreboard 继续选择更后面的 selective hole 做 fast retransmit，不再只盯第一个缺口
+- `[done]` 为 selective hole fast retransmit 补纯逻辑单元测试，并完成轻量 direct 回归与 handoff smoke 回归验证
+- `[done]` timeout 恢复也开始按 scoreboard 优先补已知 selective hole，而不是优先补推进不了 cumulative ACK 的尾部分片
+- `[done]` 为 scoreboard-aware timeout retransmit 补纯逻辑单元测试，并完成轻量 direct 回归与 handoff smoke 回归验证
+- `[done]` 把 timeout / fast retransmit / fast recovery 三条路径进一步收敛成统一的 scoreboard-driven loss recovery 选择器
+- `[done]` 为统一 loss recovery selector 补纯逻辑单元测试，并完成轻量 direct 回归验证
+- `[done]` 补 `scripts/smoke_direct_only.sh`，可自动完成 direct-enabled target、source auto-forward 选中 direct、本地 HTTP / 大 payload 验证
+- `[done]` `scripts/check_direct_regressions.sh` 支持按需串上 direct-only smoke，形成 pure tests / direct smoke / handoff smoke 三层回归入口
+- `[done]` 控制面不再上送或存储 published service 的真实 `target host/port`，target 侧 relay/direct responder 改为按 `service_id` 在本地配置里解析真实落点
+- `[done]` network snapshot 不再向 peers 暴露远端 service 的目标地址和完整 ACL 列表，状态视图改为仅展示 service identity 级信息
+- `[done]` relay WebSocket 数据面支持 batched multiplexing，多条 channel envelope 可合并进单个 frame，减少高频小包时的帧开销
+- `[done]` 完成 direct-only smoke 与 handoff smoke 回归验证，确认 metadata 收敛和 relay batching 没有打坏主链路
+- `[done]` 为 direct channel 增加 keepalive / keepalive-ack / peer idle timeout，减少长空闲 TCP 会话在真实 NAT 下更容易掉线却长期无感的风险
+- `[done]` runtime state / GUI 补 direct 的 smoothed RTT 和 keepalive 计数观测，可直接看出直连链路是否在做空闲保活
+- `[done]` 为 direct keepalive / peer idle timeout 补纯逻辑单元测试，并通过轻量 direct 回归验证
+- `[done]` 桌面 GUI 补系统托盘，支持关窗进托盘、托盘恢复窗口、托盘启停受管 agent 和托盘退出
+- `[done]` 桌面 GUI 补自启动管理，可为当前配置写入和移除 macOS launchd / Linux XDG autostart / Windows Startup folder 入口
+- `[done]` 补 macOS DMG、Linux tar.gz、Windows zip 三套打包脚本，并完成 macOS DMG / Linux tar.gz 本地脚本验证
 
-- [x] 明确单密码、单网络模型，移除多房间设计
-- [x] 明确新目标：在 UDP 打洞组网基础上暴露远端 UDP + TCP 服务
-- [x] 明确推荐方案：UDP 打洞建链，TCP 通过现有加密 P2P 通道转发
-- [x] 搭建 `Linux server + macOS/Windows client` 的 Go 工程结构
-- [x] 实现 HTTP 入网接口
-- [x] 实现 UDP 注册、候选地址同步与 peer 广播
-- [x] 实现多人 mesh 互联模型
+## 下一批优先任务
 
-### UDP 数据面
+- `[next]` 暂无
 
-- [x] 实现客户端单 UDP socket 复用
-- [x] 实现基础 UDP 打洞流程
-- [x] 实现端到端加密会话
-- [x] 实现本地 UDP `publish`
-- [x] 实现远端 UDP `bind`
-- [x] 实现请求/响应转发主链路
+## 后续任务
 
-### 配置与 CLI
-
-- [x] 实现客户端 JSON 配置加载与校验
-- [x] 支持 `publish` / `bind` 的 `protocol=udp|tcp`
-- [x] 配置向导支持录入 TCP `publish` / `bind`
-- [x] 抽取 GUI 可复用的总览数据层
-- [x] 支持 `auto_connect` 配置项
-- [x] 实现 `-init-config`
-- [x] 实现 `-edit-config`
-- [x] 实现 `-show-config`
-- [x] 实现 `-overview`
-- [x] 实现 `-overview-json`
-- [x] 实现局部修改配置：
-  - [x] `-set-server-url`
-  - [x] `-set-password`
-  - [x] `-set-device-name`
-  - [x] `-set-auto-connect`
-  - [x] `-set-udp-listen`
-  - [x] `-set-admin-listen`
-  - [x] `-upsert-publish`
-    - 支持 `name=host:port`
-    - 支持 `name=protocol,host:port`
-  - [x] `-delete-publish`
-  - [x] `-upsert-bind`
-    - 支持 `name=peer,service,host:port`
-    - 支持 `name=protocol,peer,service,host:port`
-  - [x] `-delete-bind`
-- [x] 补开机启动管理命令
-  - [x] `-autostart-status`
-  - [x] `-install-autostart`
-  - [x] `-uninstall-autostart`
-
-### 观测与管理
-
-- [x] 实现客户端本地管理接口 `/status`
-- [x] 实现 `-status` JSON 状态输出
-- [x] 实现 `-peers` 文本视图
-- [x] 实现 `-routes` 文本视图
-- [x] 实现 `-trace` 联调视图
-- [x] 状态快照和服务发现中携带服务协议信息
-- [x] 补更明确的重连与失败原因状态摘要
-- [x] 给 `-trace` 补充每个 candidate 的耗时与最后成功来源
-- [x] 实现服务端在线设备查询接口
-- [x] 实现服务端踢设备接口
-- [x] 给服务端管理接口补更清晰的错误返回与说明
-- [x] 实现客户端侧服务端管理命令：
-  - [x] `-network`
-  - [x] `-network-json`
-  - [x] `-kick-device-name`
-  - [x] `-kick-device-id`
-- [x] 增加客户端 / 服务端日志级别配置项
-- [x] 支持服务端运行中调整日志级别并写回配置
-- [x] 支持客户端运行中调整日志级别并写回配置
-
-### 稳定性与测试
-
-- [x] 修复被踢掉设备仍可能通过旧打洞包重新出现的问题
-- [x] 补“会话失效 / 被踢 / 网络变化”后的自动重新入网
-- [x] 支持客户端优雅离网与快速同名重连
-- [x] 增加本地 localhost 端到端集成测试
-- [x] 增加多 peer 集成测试
-- [x] 增加 peer 离线重连集成测试
-- [x] 增加服务端 kick 后重新加入集成测试
-- [x] 增加配置向导测试
-- [x] 增加配置 patch 测试
-- [x] 增加文本状态渲染测试
-- [x] 增加 TCP 本地端到端集成测试
-- [x] `go build ./...` 通过
-- [x] `go test ./...` 通过
-- [x] macOS 客户端交叉编译通过
-- [x] Windows 客户端交叉编译通过
-- [x] Linux 服务端交叉编译通过
-
-## 进行中
-
-### TCP 服务暴露改造
-
-- [x] 协议层增加 `tcp_open` / `tcp_open_result` / `tcp_data` / `tcp_ack` / `tcp_close`
-- [x] 客户端 bind 侧 TCP listener 已接入
-- [x] 客户端 publish 侧 TCP proxy 已接入
-- [x] TCP 字节流分片、ACK、重传、按序重组与关闭控制已接入
-- [x] 修复 TCP 服务匹配收口问题，并消除关闭路径中的死锁 / 竞态
-- [x] 补 TCP 本地端到端集成测试
-- [x] 验证断线重连 / peer 掉线后的 TCP 会话清理与恢复语义
-  - 已补并跑通 peer kick 后旧 TCP 会话关闭与重连恢复集成测试
-  - 已补并跑通 peer 主动离网 / 重启后的 TCP 会话关闭与恢复集成测试
-
-### 公网联调准备
-
-- [>] 继续准备真实公网联调
-  - 先验证 UDP 打洞命中情况
-  - 再验证基于 UDP P2P 的 TCP 服务访问
-
-### 控制面与工程化补强
-
-- [x] 检查 GitHub 工作流是否需要补 CI / 构建校验，并按当前项目形态更新
-- [x] 增加日志级别控制：
-  - 服务端支持命令行实时调整并写入配置
-  - 客户端支持 GUI 实时调整并写入配置
-- [x] 核实并补测试“客户端启动并与服务端交互通过后自动按配置执行 publish / bind”
-- [x] 客户端只接受来自 `server_udp` 的控制面 UDP 包，避免公网环境下被非服务端报文误触发重连或污染 peer 视图
-- [x] 收紧 TCP 数据分片尺寸，确保经过 JSON + 加密封装后的 UDP 包仍落在更保守的公网联调预算内
-
-### GUI 桌面端重构
-
-- [x] 增加 GUI locale 检测，优先读取系统 locale 并按中文环境切换文案
-- [x] 补 Windows / macOS GUI 图标资源与安装产物图标接入
-- [x] 完成 GUI 第一版壳层重构：
-  - 左侧导航
-  - 中间工作区
-  - 右侧情报栏
-  - 首页控制台式总览
-- [x] 将服务管理、网络设备、诊断、连接设置拆成独立页面
-- [x] 将 runtime / 服务 / 日志 / 事件摘要回流到新 GUI 首页
-- [x] 收口 GUI 首页摘要与导航语义
-  - 已处理未启动客户端时的首页状态表达
-  - 已校正 discovered 统计与实际发现列表的一致性
-  - 已修正 dashboard 到服务页的操作跳转
-- [x] 补齐 GUI 主路径本地化
-  - 网络设备页与诊断页改为使用 GUI 本地化渲染
-  - 常见后端错误信息接入 GUI 侧本地化映射
-  - 设备 ID、状态、表格列名等壳层细节文案统一走翻译表
-- [x] 收口 GUI 刷新与状态一致性
-  - `Reload Config` 失败时不再误报“已刷新”
-  - `Save Config` 后会立刻刷新总览壳层
-  - 补首页 / 导航 / 本地化 / 刷新链路回归测试
-
-## 下一步待办
-
-### 高优先级
-
-- [x] 验证 TCP 断线重连 / peer 掉线后的会话清理与恢复语义
-- [x] 让 GUI 服务管理页支持选择 `udp/tcp`
-- [x] 更新 `README.md` / `docs/USER_GUIDE.md` / `docs/DEPLOYMENT.md` / examples，使其反映 UDP + TCP 目标
-
-### 中优先级
-
-- [ ] 做真实公网联调并记录结果
-  - 输出内容：网络环境、UDP 打洞是否成功、TCP 转发是否成功、命中 candidate、失败原因
-- [x] 增加 TCP 场景的状态 / 诊断信息
-- [x] 增加正式版本号与发布产物命名约定
-- [x] 收口 GUI 首页 idle / stopped 语义，避免把正常未启动态显示成异常
-- [x] 校正 GUI 首页 discovered 摘要与服务发现列表保持一致
-
-### 低优先级
-
-- [x] 补一个更简洁的使用手册
-- [x] 补一个最小 PowerShell / shell 启动脚本
-- [x] 补一组常见 TCP 场景示例配置
-  - Windows RDP `3389`
-  - SSH `22`
-
-## 风险与注意事项
-
-- [!] 双方若处于严格 NAT / 对称 NAT / 某些企业网络，UDP 打洞可能失败；TCP 能力也会随之不可用
-- [!] 当前 TCP 方案本质是“在 UDP P2P 通道里承载可靠字节流”，目标优先覆盖 RDP / SSH 这类交互式服务，不等于通用高性能隧道
-- [!] 当前密码保存在配置文件中，属于“个人使用可接受”的方案，但仍建议使用强密码
-- [!] 当前已验证的是本地集成测试，不等于真实公网环境全部通过
-- [!] 这个项目是 UDP overlay，不是透明虚拟局域网，依赖广播发现的程序不一定可直接使用
-- [!] 日志级别运行时调整已引入新的本地 / 服务端管理入口；服务端在未配置 `admin_password` 时只允许 loopback 调整
-
-## 验收清单
-
-### 当前阶段验收
-
-- [x] 两台设备可通过同一密码加入同一网络
-- [x] 两台设备可建立 P2P UDP 通道
-- [x] 一台设备发布本地 UDP 服务，另一台设备可通过本地 bind 端口访问
-- [x] 一台设备发布本地 TCP 服务，另一台设备可通过本地 bind 端口访问
-- [x] 可查看 peer / route / trace / network 状态
-- [x] 可从服务端踢掉指定设备
-
-### 发布前验收
-
-- [x] `go build ./...` 通过
-- [x] `go test ./...` 通过
-- [x] GitHub 工作流能覆盖日常 CI 校验与正式打包
-- [x] GUI 客户端可配置 UDP / TCP 服务
-- [x] GUI 客户端可实时调整日志级别并持久化
-- [x] 服务端可通过命令行实时调整日志级别并持久化
-- [ ] 真实公网两端 UDP 打洞实测通过
-- [ ] 基于 UDP P2P 的 TCP 服务转发实测通过
-- [x] 断线与重入网行为符合预期
-- [x] 文档足够支撑独立部署和使用
-
-## 更新规则
-
-- 每次需求目标调整，先更新本文档里的“目标更新 / 当前边界 / 待办”，再动手改代码
-- 每次完成一个可验证功能，就把对应任务从 `[ ]` 改成 `[x]`
-- 每次开始一个明确功能，就把它移到“进行中”
-- 每次发现真实风险或已知缺口，就补到“风险与注意事项”
-- 每次联调后，把结果补到本文档，而不是只留在对话里
+- `[later]` direct 数据面的跨 NAT / 长时间 soak / 弱网损伤实机验证
+- `[later]` Windows / macOS / Linux 三端桌面 GUI 的人工点按验收
+- `[later]` macOS / Windows 安装包的签名、公证和发行级打磨

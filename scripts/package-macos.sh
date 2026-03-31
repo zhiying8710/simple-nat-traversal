@@ -1,118 +1,93 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 5 ]]; then
-  echo "usage: $0 <version> <arch> <gui-binary> <cli-binary> <output-dmg>" >&2
+if [[ "${1:-}" == "" || "${2:-}" == "" || "${3:-}" == "" || "${4:-}" == "" || "${5:-}" == "" ]]; then
+  cat <<'USAGE'
+usage: scripts/package-macos.sh <version> <arch-label> <desktop-binary> <agent-binary> <out-dmg>
+
+example:
+  scripts/package-macos.sh 0.1.0 universal target/release/minipunch-desktop target/release/minipunch-agent dist/minipunch-macos.dmg
+USAGE
   exit 1
 fi
 
 VERSION="$1"
-ARCH="$2"
-GUI_BIN="$3"
-CLI_BIN="$4"
-OUTPUT_DMG="$5"
+ARCH_LABEL="$2"
+DESKTOP_BIN="$3"
+AGENT_BIN="$4"
+OUT_DMG="$5"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STAGE_DIR="$(mktemp -d)"
-TMP_DMG_ROOT="$(mktemp -d)"
-APP_NAME="Simple NAT Traversal.app"
-APP_DIR="${STAGE_DIR}/${APP_NAME}"
+APP_NAME="MiniPunch Desktop"
+APP_BUNDLE="${APP_NAME}.app"
+EXECUTABLE_NAME="MiniPunch Desktop"
+TMP_DIR="$(mktemp -d)"
+STAGE_DIR="${TMP_DIR}/stage"
+APP_DIR="${STAGE_DIR}/${APP_BUNDLE}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
-MOUNT_DIR="${TMP_DMG_ROOT}/mount"
-RW_DMG="${TMP_DMG_ROOT}/payload.dmg"
-VOLUME_NAME="Simple NAT Traversal ${ARCH}"
+BIN_DIR="${RESOURCES_DIR}/bin"
 
 cleanup() {
-  if [[ -d "${MOUNT_DIR}" ]]; then
-    hdiutil detach "${MOUNT_DIR}" >/dev/null 2>&1 || hdiutil detach "${MOUNT_DIR}" -force >/dev/null 2>&1 || true
-  fi
-  rm -rf "${STAGE_DIR}"
-  rm -rf "${TMP_DMG_ROOT}"
+  rm -rf "${TMP_DIR}"
 }
 trap cleanup EXIT
 
-mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
+mkdir -p "${MACOS_DIR}" "${BIN_DIR}"
 
-cp "${GUI_BIN}" "${MACOS_DIR}/snt-gui"
-chmod +x "${MACOS_DIR}/snt-gui"
-cp "${ROOT_DIR}/internal/guiassets/assets/app_icon.icns" "${RESOURCES_DIR}/app_icon.icns"
+cp "${DESKTOP_BIN}" "${MACOS_DIR}/${EXECUTABLE_NAME}"
+chmod +x "${MACOS_DIR}/${EXECUTABLE_NAME}"
+cp "${AGENT_BIN}" "${BIN_DIR}/minipunch-agent"
+chmod +x "${BIN_DIR}/minipunch-agent"
 
-cat > "${CONTENTS_DIR}/Info.plist" <<EOF
+cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleDevelopmentRegion</key>
-  <string>en</string>
-  <key>CFBundleDisplayName</key>
-  <string>Simple NAT Traversal</string>
-  <key>CFBundleExecutable</key>
-  <string>snt-gui</string>
-  <key>CFBundleIconFile</key>
-  <string>app_icon.icns</string>
-  <key>CFBundleIdentifier</key>
-  <string>io.github.zhiying8710.simple-nat-traversal</string>
-  <key>CFBundleInfoDictionaryVersion</key>
-  <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Simple NAT Traversal</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>${VERSION}</string>
+  <string>${APP_NAME}</string>
+  <key>CFBundleDisplayName</key>
+  <string>${APP_NAME}</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.minipunch.desktop</string>
   <key>CFBundleVersion</key>
   <string>${VERSION}</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${VERSION}</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleExecutable</key>
+  <string>${EXECUTABLE_NAME}</string>
   <key>LSMinimumSystemVersion</key>
-  <string>11.0</string>
-  <key>NSHighResolutionCapable</key>
-  <true/>
+  <string>12.0</string>
 </dict>
 </plist>
-EOF
+PLIST
 
-cp "${CLI_BIN}" "${STAGE_DIR}/snt"
-chmod +x "${STAGE_DIR}/snt"
-cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/README.md"
-cp "${ROOT_DIR}/docs/DEPLOYMENT.md" "${STAGE_DIR}/DEPLOYMENT.md"
-cp "${ROOT_DIR}/docs/USER_GUIDE.md" "${STAGE_DIR}/USER_GUIDE.md"
-cp "${ROOT_DIR}/docs/GUI_CLIENT.md" "${STAGE_DIR}/GUI_CLIENT.md"
-cp "${ROOT_DIR}/examples/client-macos.json" "${STAGE_DIR}/client.example.json"
+cat > "${STAGE_DIR}/README.txt" <<README
+MiniPunch Desktop ${VERSION} (${ARCH_LABEL})
 
-mkdir -p "$(dirname "${OUTPUT_DMG}")"
-rm -f "${OUTPUT_DMG}"
-mkdir -p "${MOUNT_DIR}"
+Contents:
+- ${APP_BUNDLE}: desktop GUI with tray/autostart support
+- embedded minipunch-agent CLI: ${APP_BUNDLE}/Contents/Resources/bin/minipunch-agent
 
-STAGE_KB="$(du -sk "${STAGE_DIR}" | awk '{print $1}')"
-STAGE_MB="$(((STAGE_KB + 1023) / 1024))"
-IMAGE_MB="$((STAGE_MB + STAGE_MB / 4 + 64))"
-if (( IMAGE_MB < 128 )); then
-  IMAGE_MB=128
-fi
+Notes:
+- This build is not code-signed or notarized.
+- On first launch, macOS may require right-click -> Open.
+- Autostart uses ~/Library/LaunchAgents/${APP_NAME// /-}.plist at runtime.
+README
 
-echo "packaging macOS DMG: stage_size=${STAGE_MB}MB image_size=${IMAGE_MB}MB output=${OUTPUT_DMG}"
+ln -s /Applications "${STAGE_DIR}/Applications"
+
+mkdir -p "$(dirname "${OUT_DMG}")"
+rm -f "${OUT_DMG}"
 
 hdiutil create \
-  -size "${IMAGE_MB}m" \
-  -fs HFS+ \
-  -volname "${VOLUME_NAME}" \
+  -volname "${APP_NAME} ${VERSION}" \
+  -srcfolder "${STAGE_DIR}" \
   -ov \
-  "${RW_DMG}"
-
-hdiutil attach \
-  -mountpoint "${MOUNT_DIR}" \
-  -nobrowse \
-  -noverify \
-  "${RW_DMG}"
-
-ditto "${STAGE_DIR}" "${MOUNT_DIR}"
-
-hdiutil detach "${MOUNT_DIR}"
-
-hdiutil convert \
-  "${RW_DMG}" \
   -format UDZO \
-  -imagekey zlib-level=9 \
-  -ov \
-  -o "${OUTPUT_DMG}"
+  "${OUT_DMG}" >/dev/null
+
+echo "created ${OUT_DMG}"
