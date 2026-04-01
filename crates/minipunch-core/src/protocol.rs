@@ -91,6 +91,15 @@ pub struct AdminDevicesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminClearDevicesResponse {
+    pub deleted_devices: usize,
+    pub deleted_sessions: usize,
+    pub deleted_services: usize,
+    pub deleted_acl_entries: usize,
+    pub deleted_rendezvous_attempts: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectConnectionCandidate {
     pub protocol: String,
     pub addr: String,

@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use anyhow::{Context, Result, anyhow};
 use hostname::get as hostname_get;
 use minipunch_agent::AgentRuntime;
@@ -14,6 +12,8 @@ use minipunch_agent::runtime_state::{
 use minipunch_agent::status::{AgentStatusReport, build_status_report};
 use minipunch_core::{NetworkSnapshot, ServiceDefinition};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::image::Image;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -23,7 +23,8 @@ use tokio::task::JoinHandle;
 
 use crate::autostart::{AutostartStatus, detect_autostart, disable_autostart, enable_autostart};
 
-const INITIAL_OUTPUT: &str = "欢迎使用 MiniPunch 桌面端。\n先加载配置，然后在页面里编辑已发布服务和转发规则，最后保存配置。";
+const INITIAL_OUTPUT: &str =
+    "欢迎使用 MiniPunch 桌面端。\n先加载配置，然后在页面里编辑已发布服务和转发规则，最后保存配置。";
 const INITIAL_NETWORK_NOTE: &str = "尚未读取在线设备快照。";
 #[derive(Debug, Clone, Default)]
 pub struct DesktopLaunchArgs {
@@ -402,8 +403,7 @@ pub fn setup(app: &mut App, launch_args: DesktopLaunchArgs) -> Result<()> {
             ManagedAgentStartTrigger::Interactive
         };
         tauri::async_runtime::spawn(async move {
-            if let Err(err) =
-                start_managed_agent_for_current_path(&app_handle, start_trigger).await
+            if let Err(err) = start_managed_agent_for_current_path(&app_handle, start_trigger).await
             {
                 note_managed_agent_start_failure(&app_handle, &err.to_string());
                 if start_trigger.exits_process_on_failure() {
@@ -579,10 +579,7 @@ fn current_config_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(inner.current_config_path.clone())
 }
 
-fn resolve_config_path(
-    state: &SharedDesktopState,
-    requested: Option<String>,
-) -> PathBuf {
+fn resolve_config_path(state: &SharedDesktopState, requested: Option<String>) -> PathBuf {
     let requested = requested
         .and_then(|value| {
             let trimmed = value.trim().to_string();
@@ -606,7 +603,11 @@ async fn reconcile_managed_agent(app: &AppHandle) -> Result<()> {
             .unwrap_or(false);
         if is_finished {
             Some((
-                inner.managed_agent.task.take().expect("finished task must exist"),
+                inner
+                    .managed_agent
+                    .task
+                    .take()
+                    .expect("finished task must exist"),
                 matches!(inner.managed_agent.state, ManagedAgentState::Stopping),
             ))
         } else {
@@ -715,7 +716,9 @@ async fn preflight_managed_agent_start(
 
 fn validate_boot_ready_config(config: &AgentConfig) -> Result<()> {
     if config.server_url.trim().is_empty() {
-        return Err(anyhow!("当前配置缺少服务器地址，无法在开机自启时拉起 Agent"));
+        return Err(anyhow!(
+            "当前配置缺少服务器地址，无法在开机自启时拉起 Agent"
+        ));
     }
     if config.device_name.trim().is_empty() {
         return Err(anyhow!("当前配置缺少设备名称，无法在开机自启时拉起 Agent"));
@@ -804,11 +807,11 @@ fn save_config_from_drafts(request: &SaveConfigRequest) -> Result<AgentConfig> {
 fn render_session_summary(config: &AgentConfig) -> String {
     match (&config.session_token, config.session_expires_at) {
         (Some(_), Some(expires_at)) if config.has_valid_session() => {
-            format!("会话有效，过期时间={}", expires_at)
+            format!("设备会话有效，过期时间[{}]", expires_at)
         }
-        (Some(_), Some(expires_at)) => format!("会话已过期，过期时间={}", expires_at),
-        (Some(_), None) => "已保存会话令牌，但没有过期时间。".to_string(),
-        _ => "没有已保存会话".to_string(),
+        (Some(_), Some(expires_at)) => format!("设备会话已过期，过期时间[{}]", expires_at),
+        (Some(_), None) => "已保存设备会话令牌，但没有过期时间。".to_string(),
+        _ => "没有已保存设备会话".to_string(),
     }
 }
 
@@ -866,10 +869,7 @@ fn runtime_snapshot_for_config(config_path: &Path) -> (Option<RuntimeStateSnapsh
 
 fn raw_config_preview_for_path(config_path: &Path) -> (String, String) {
     match std::fs::read_to_string(config_path) {
-        Ok(contents) => (
-            contents,
-            format!("原始配置来源：{}", config_path.display()),
-        ),
+        Ok(contents) => (contents, format!("原始配置来源：{}", config_path.display())),
         Err(err) => (
             String::new(),
             format!("读取原始配置失败：{}：{err}", config_path.display()),
@@ -898,12 +898,16 @@ fn autostart_status_view(status: AutostartStatus) -> AutostartStatusView {
     }
 }
 
-fn build_snapshot(
-    state: &SharedDesktopState,
-    config_path: &Path,
-) -> Result<DesktopSnapshot> {
+fn build_snapshot(state: &SharedDesktopState, config_path: &Path) -> Result<DesktopSnapshot> {
     let config = AgentConfig::load_or_default(config_path)?;
-    let (network_snapshot, network_snapshot_note, snapshot_error, output, managed_agent_state, managed_agent_note) = {
+    let (
+        network_snapshot,
+        network_snapshot_note,
+        snapshot_error,
+        output,
+        managed_agent_state,
+        managed_agent_note,
+    ) = {
         let inner = state.inner.lock().expect("desktop state poisoned");
         (
             inner.network_snapshot.clone(),
@@ -978,7 +982,9 @@ pub async fn desktop_snapshot(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopSnapshot> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, request.config_path);
     build_snapshot(&state, &config_path).map_err(|err| err.to_string())
 }
@@ -989,7 +995,9 @@ pub async fn load_config(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopActionResponse> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, Some(request.config_path));
     AgentConfig::load_or_default(&config_path).map_err(|err| err.to_string())?;
     {
@@ -1016,7 +1024,9 @@ pub async fn save_config(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopActionResponse> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, Some(request.config_path.clone()));
     let config = save_config_from_drafts(&request).map_err(|err| err.to_string())?;
     {
@@ -1045,7 +1055,9 @@ pub async fn join_network(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopActionResponse> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, Some(request.config_path.clone()));
     AgentRuntime::init(
         &config_path,
@@ -1079,7 +1091,9 @@ pub async fn heartbeat(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopActionResponse> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, Some(request.config_path));
     let mut runtime = AgentRuntime::load(&config_path)
         .await
@@ -1106,12 +1120,17 @@ pub async fn refresh_network(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopActionResponse> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, Some(request.config_path));
     let mut runtime = AgentRuntime::load(&config_path)
         .await
         .map_err(|err| err.to_string())?;
-    let snapshot = runtime.network_snapshot().await.map_err(|err| err.to_string())?;
+    let snapshot = runtime
+        .network_snapshot()
+        .await
+        .map_err(|err| err.to_string())?;
     {
         let mut inner = state.inner.lock().expect("desktop state poisoned");
         inner.network_snapshot_note = format!(
@@ -1144,7 +1163,9 @@ pub async fn refresh_status(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopActionResponse> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, Some(request.config_path));
     let result = async {
         let mut runtime = AgentRuntime::load(&config_path).await?;
@@ -1201,7 +1222,9 @@ pub async fn publish_services(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopActionResponse> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, Some(request.config_path.clone()));
     let config = save_config_from_drafts(&request).map_err(|err| err.to_string())?;
     let mut runtime = AgentRuntime::load(&config_path)
@@ -1249,9 +1272,13 @@ pub async fn start_managed_agent(
 ) -> CommandResult<DesktopActionResponse> {
     let config_path = resolve_config_path(&state, Some(request.config_path.clone()));
     save_config_from_drafts(&request).map_err(|err| err.to_string())?;
-    start_managed_agent_for_path(&app, config_path.clone(), ManagedAgentStartTrigger::Interactive)
-        .await
-        .map_err(|err| err.to_string())?;
+    start_managed_agent_for_path(
+        &app,
+        config_path.clone(),
+        ManagedAgentStartTrigger::Interactive,
+    )
+    .await
+    .map_err(|err| err.to_string())?;
     response(
         &state,
         &config_path,
@@ -1301,7 +1328,8 @@ mod tests {
 
         config.device_id = Some("dev_test".to_string());
         config.private_key_base64 = Some("identity".to_string());
-        let err = validate_boot_ready_config(&config).expect_err("relay key should still be required");
+        let err =
+            validate_boot_ready_config(&config).expect_err("relay key should still be required");
         assert!(err.to_string().contains("relay 私钥"));
     }
 
@@ -1349,7 +1377,9 @@ pub async fn toggle_autostart(
     state: State<'_, SharedDesktopState>,
     app: AppHandle,
 ) -> CommandResult<DesktopActionResponse> {
-    reconcile_managed_agent(&app).await.map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
     let config_path = resolve_config_path(&state, Some(request.config_path));
     let status = detect_autostart(&config_path).map_err(|err| err.to_string())?;
     let next = if status.enabled {

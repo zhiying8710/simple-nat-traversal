@@ -10,7 +10,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use minipunch_core::{
-    AdminDevicesResponse, BootstrapInitResponse, CreateJoinTokenRequest, DirectRendezvousSession,
+    AdminClearDevicesResponse, AdminDevicesResponse, BootstrapInitResponse, CreateJoinTokenRequest, DirectRendezvousSession,
     HeartbeatResponse, JoinTokenResponse, NetworkSnapshot, PendingDirectRendezvousResponse,
     RegisterDeviceRequest, RegisterDeviceResponse, RelayEnvelope, RelayTransportFrame,
     ServiceDefinition, StartDirectRendezvousRequest, UpdateDirectRendezvousCandidatesRequest,
@@ -37,7 +37,10 @@ pub fn build_router(db: Database) -> Router {
         .route("/healthz", get(healthz))
         .route("/api/v1/bootstrap/init", post(bootstrap_init))
         .route("/api/v1/admin/join-tokens", post(create_join_token))
-        .route("/api/v1/admin/devices", get(admin_devices))
+        .route(
+            "/api/v1/admin/devices",
+            get(admin_devices).delete(clear_devices),
+        )
         .route("/api/v1/devices/register", post(register_device))
         .route("/api/v1/devices/heartbeat", post(heartbeat))
         .route("/api/v1/services/upsert", post(upsert_service))
@@ -87,6 +90,16 @@ async fn admin_devices(
 ) -> Result<Json<AdminDevicesResponse>> {
     let admin_token = admin_token_from_headers(&headers)?;
     let response = state.db.admin_devices(admin_token).await?;
+    Ok(Json(response))
+}
+
+async fn clear_devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AdminClearDevicesResponse>> {
+    let admin_token = admin_token_from_headers(&headers)?;
+    let response = state.db.clear_devices(admin_token).await?;
+    state.relay_hub.reset().await;
     Ok(Json(response))
 }
 

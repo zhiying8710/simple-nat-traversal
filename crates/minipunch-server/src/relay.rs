@@ -83,6 +83,12 @@ impl RelayHub {
         }
     }
 
+    pub async fn reset(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.devices.clear();
+        inner.channels.clear();
+    }
+
     pub async fn handle_envelope(
         &self,
         db: &Database,

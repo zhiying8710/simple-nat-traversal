@@ -90,12 +90,12 @@ const canReloadRawConfig = computed(() => !busy.value && hasConfigPath.value);
 const sessionSummaryDisplay = computed(() => {
   const session = snapshot.value?.status_report?.session;
   if (!session?.has_token) {
-    return "没有已保存会话";
+    return "没有已保存设备会话";
   }
   if (session.expires_at) {
-    return `${session.is_valid ? "会话有效" : "会话已过期"}，过期时间=${formatTimestamp(session.expires_at)}`;
+    return `${session.is_valid ? "" : "已过期，"}过期时间[${formatTimestamp(session.expires_at)}]`;
   }
-  return "已保存会话令牌，但没有过期时间。";
+  return "已保存设备会话令牌，但没有过期时间。";
 });
 
 function clone(value) {
@@ -471,7 +471,7 @@ onBeforeUnmount(() => {
           <strong>{{ snapshot.device_id }}</strong>
         </div>
         <div class="summary-pill">
-          <span>会话</span>
+          <span>设备会话</span>
           <strong>{{ sessionSummaryDisplay }}</strong>
         </div>
       </div>
@@ -520,7 +520,7 @@ onBeforeUnmount(() => {
               <strong>{{ snapshot?.device_id ?? "尚未加入网络" }}</strong>
             </article>
             <article class="summary-card soft-green">
-              <span>会话</span>
+              <span>设备会话</span>
               <strong>{{ sessionSummaryDisplay }}</strong>
             </article>
             <article class="summary-card soft-mint">
@@ -633,7 +633,7 @@ onBeforeUnmount(() => {
           <div class="panel-header">
             <div>
               <h2>控制面</h2>
-              <p>配置本机的控制面地址、入网令牌与设备名，并执行最常用的控制面动作。</p>
+              <p>配置本机的控制面地址、入网令牌与设备名，并执行最常用的控制面动作。入网令牌只在首次加入网络时使用，配置里的 <code>session_expires_at</code> 表示设备会话过期时间，不是入网令牌过期时间。</p>
             </div>
           </div>
           <div class="form-grid">

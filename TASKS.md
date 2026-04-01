@@ -151,6 +151,7 @@
 - `[done]` 补 GitHub Actions 手动发版工作流：输入版本号后先校验 tag 递增关系、删除同版本旧 tag/release，再直接创建 GitHub Release，并在 macOS / Windows client 构建前先执行 `npm ci && npm run build`
 - `[done]` 发版工作流补默认分支限制、Cargo/package.json 版本同步校验，以及 publish 失败后的 draft release/tag 清理闭环
 - `[done]` 发版工作流补 Node/Rust 构建缓存，减少重复发版时的冷启动耗时
+- `[done]` 服务端把新设备 session 过期时间改成继承首次消费 join token 的截止时间；老设备若尚未写入设备级 deadline，则继续兼容 24 小时 session 逻辑
 
 ## 下一批优先任务
 

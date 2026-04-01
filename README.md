@@ -98,6 +98,7 @@
 - 当前 GUI 已经可以启动、停止桌面端自己拉起的受管 `minipunch-agent run` 任务，并显示这个受管任务的运行态。
 - 当前 GUI 已经补了系统托盘；如果托盘可用，关窗会默认转成“隐藏到托盘”，并可以从托盘恢复窗口、启停受管 agent、切换自启动或退出程序。
 - 当前桌面端支持 `--autostart --config <path>` 启动参数；自启动入口会用它在登录后以后台模式拉起受管 agent，同时仍兼容旧的 `--background --start-agent --config <path>` 入口。
+- 当前新设备首次入网后拿到的 `session_expires_at` 会继承它所消费 join token 的截止时间，不再固定写死为 24 小时；已在库的老设备若还没有迁移出的设备级 session deadline，则继续兼容旧的 24 小时 session 逻辑，直到重新入网。
 - 当前任意本地 `minipunch-agent run` 只要使用同一份配置，都会持续刷新同目录下的 `<config-stem>.runtime.json`；GUI 会读取它来展示真实运行状态、最近心跳、重启原因和最近事件。
 - 当前 GUI 在启动时会忽略上次关闭遗留的 terminal / stale runtime state，避免仅仅重开桌面端时仍把旧的本地运行观测当成“当前正在运行”。
 - 当前 GUI 新增了在线设备页：会基于最近一次 network snapshot 列出在线设备和它们已发布的服务，并支持一键生成本地 forward 草稿，再跳转到转发规则页继续调整。

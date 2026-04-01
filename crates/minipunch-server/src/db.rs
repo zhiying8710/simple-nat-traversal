@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use minipunch_core::{
-    AdminDevicesResponse, BootstrapInitResponse, CreateJoinTokenRequest, DeviceSummary,
+    AdminClearDevicesResponse, AdminDevicesResponse, BootstrapInitResponse, CreateJoinTokenRequest, DeviceSummary,
     DirectConnectionCandidate, DirectRendezvousParticipant, DirectRendezvousSession,
     HeartbeatResponse, JoinTokenResponse, NetworkSnapshot, PendingDirectRendezvousResponse,
     RegisterDeviceRequest, RegisterDeviceResponse, ServiceDefinition, StartDirectRendezvousRequest,
@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use crate::error::{Result, ServerError};
 
 const JOIN_TOKEN_DEFAULT_TTL_MINUTES: i64 = 10;
-const SESSION_TTL_SECONDS: i64 = 24 * 60 * 60;
+const LEGACY_SESSION_TTL_SECONDS: i64 = 24 * 60 * 60;
 const ONLINE_WINDOW_SECONDS: i64 = 90;
 const DIRECT_RENDEZVOUS_TTL_SECONDS: i64 = 45;
 
@@ -58,6 +58,7 @@ impl Database {
                 relay_public_key_signature TEXT,
                 os TEXT NOT NULL,
                 version TEXT NOT NULL,
+                session_deadline_at INTEGER,
                 created_at INTEGER NOT NULL,
                 last_seen_at INTEGER NOT NULL
             );
@@ -112,6 +113,10 @@ impl Database {
         add_column_if_missing(
             &conn,
             "ALTER TABLE devices ADD COLUMN relay_public_key_signature TEXT",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "ALTER TABLE devices ADD COLUMN session_deadline_at INTEGER",
         )?;
         Ok(())
     }
@@ -207,18 +212,23 @@ impl Database {
         let now = unix_timestamp_now();
         let mut conn = self.conn.lock().await;
 
-        let existing_public_key = conn
+        let existing_device = conn
             .query_row(
-                "SELECT public_key FROM devices WHERE device_id = ?1",
+                "SELECT public_key, session_deadline_at FROM devices WHERE device_id = ?1",
                 params![request.device_id],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .optional()?;
 
-        match existing_public_key {
-            Some(public_key) => {
+        let session_expires_at = match existing_device {
+            Some((public_key, session_deadline_at)) => {
                 if public_key != request.public_key {
                     return Err(ServerError::Forbidden);
+                }
+                if let Some(deadline) = session_deadline_at
+                    && deadline < now
+                {
+                    return Err(ServerError::Unauthorized);
                 }
                 conn.execute(
                     "UPDATE devices SET device_name = ?1, relay_public_key = ?2, relay_public_key_signature = ?3, os = ?4, version = ?5, last_seen_at = ?6 WHERE device_id = ?7",
@@ -232,15 +242,17 @@ impl Database {
                         request.device_id
                     ],
                 )?;
+                session_deadline_at.unwrap_or(now + LEGACY_SESSION_TTL_SECONDS)
             }
             None => {
                 let join_token = request
                     .join_token
                     .as_deref()
                     .ok_or_else(|| ServerError::Unauthorized)?;
-                self.consume_join_token_locked(&mut conn, join_token, now)?;
+                let session_deadline_at =
+                    self.consume_join_token_locked(&mut conn, join_token, now)?;
                 conn.execute(
-                    "INSERT INTO devices(device_id, device_name, public_key, relay_public_key, relay_public_key_signature, os, version, created_at, last_seen_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    "INSERT INTO devices(device_id, device_name, public_key, relay_public_key, relay_public_key_signature, os, version, session_deadline_at, created_at, last_seen_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         request.device_id,
                         request.device_name,
@@ -249,15 +261,16 @@ impl Database {
                         request.relay_public_key_signature,
                         request.os,
                         request.version,
+                        session_deadline_at,
                         now,
                         now
                     ],
                 )?;
+                session_deadline_at
             }
-        }
+        };
 
         let session_token = generate_token("sess");
-        let session_expires_at = now + SESSION_TTL_SECONDS;
         conn.execute(
             "DELETE FROM device_sessions WHERE device_id = ?1",
             params![request.device_id],
@@ -452,6 +465,29 @@ impl Database {
             devices.push(row?);
         }
         Ok(AdminDevicesResponse { devices })
+    }
+
+    pub async fn clear_devices(&self, admin_token: &str) -> Result<AdminClearDevicesResponse> {
+        self.ensure_admin(admin_token).await?;
+        let mut conn = self.conn.lock().await;
+        let tx = conn.transaction()?;
+
+        let deleted_rendezvous_attempts =
+            tx.execute("DELETE FROM direct_rendezvous_attempts", [])? as usize;
+        let deleted_acl_entries = tx.execute("DELETE FROM service_acl", [])? as usize;
+        let deleted_services = tx.execute("DELETE FROM services", [])? as usize;
+        let deleted_sessions = tx.execute("DELETE FROM device_sessions", [])? as usize;
+        let deleted_devices = tx.execute("DELETE FROM devices", [])? as usize;
+
+        tx.commit()?;
+
+        Ok(AdminClearDevicesResponse {
+            deleted_devices,
+            deleted_sessions,
+            deleted_services,
+            deleted_acl_entries,
+            deleted_rendezvous_attempts,
+        })
     }
 
     pub async fn start_direct_rendezvous(
@@ -707,7 +743,7 @@ impl Database {
         conn: &mut Connection,
         join_token: &str,
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let row = conn
             .query_row(
                 "SELECT expires_at, used_at FROM join_tokens WHERE token_hash = ?1",
@@ -722,7 +758,7 @@ impl Database {
                     "UPDATE join_tokens SET used_at = ?1 WHERE token_hash = ?2",
                     params![now, hash_secret(join_token)],
                 )?;
-                Ok(())
+                Ok(expires_at)
             }
             Some((expires_at, _)) if expires_at < now => Err(ServerError::Unauthorized),
             _ => Err(ServerError::Unauthorized),
@@ -897,10 +933,27 @@ mod tests {
     ) -> RegisterDeviceResponse {
         let identity = DeviceIdentity::generate();
         let relay_identity = RelayKeypair::generate();
+        register_test_device_with_identity(
+            db,
+            Some(join_token),
+            device_name,
+            &identity,
+            &relay_identity,
+        )
+        .await
+    }
+
+    async fn register_test_device_with_identity(
+        db: &Database,
+        join_token: Option<String>,
+        device_name: &str,
+        identity: &DeviceIdentity,
+        relay_identity: &RelayKeypair,
+    ) -> RegisterDeviceResponse {
         let device_id = identity.device_id();
         let nonce = generate_token("nonce");
         db.register_device(RegisterDeviceRequest {
-            join_token: Some(join_token),
+            join_token,
             device_id: device_id.clone(),
             device_name: device_name.to_string(),
             os: "test-os".to_string(),
@@ -921,6 +974,69 @@ mod tests {
         })
         .await
         .expect("register test device")
+    }
+
+    #[tokio::test]
+    async fn first_session_deadline_matches_join_token_expiry() {
+        let db_path = test_db_path("session-deadline");
+        let db = Database::open(&db_path).await.expect("open test db");
+        let bootstrap = db.bootstrap_init().await.expect("bootstrap server");
+        let join = db
+            .create_join_token(
+                &bootstrap.admin_token,
+                CreateJoinTokenRequest {
+                    expires_in_minutes: Some(24 * 60 * 30),
+                    note: Some("deadline-test".to_string()),
+                },
+            )
+            .await
+            .expect("create join token");
+
+        let registered = register_test_device(&db, join.join_token.clone(), "deadline-target").await;
+        assert_eq!(registered.session_expires_at, join.expires_at);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn refreshed_session_keeps_original_join_token_deadline() {
+        let db_path = test_db_path("session-refresh");
+        let db = Database::open(&db_path).await.expect("open test db");
+        let bootstrap = db.bootstrap_init().await.expect("bootstrap server");
+        let join = db
+            .create_join_token(
+                &bootstrap.admin_token,
+                CreateJoinTokenRequest {
+                    expires_in_minutes: Some(24 * 60 * 30),
+                    note: Some("refresh-test".to_string()),
+                },
+            )
+            .await
+            .expect("create join token");
+
+        let identity = DeviceIdentity::generate();
+        let relay_identity = RelayKeypair::generate();
+        let first = register_test_device_with_identity(
+            &db,
+            Some(join.join_token.clone()),
+            "refresh-target",
+            &identity,
+            &relay_identity,
+        )
+        .await;
+        let refreshed = register_test_device_with_identity(
+            &db,
+            None,
+            "refresh-target",
+            &identity,
+            &relay_identity,
+        )
+        .await;
+
+        assert_eq!(first.session_expires_at, join.expires_at);
+        assert_eq!(refreshed.session_expires_at, join.expires_at);
+
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]
@@ -993,6 +1109,54 @@ mod tests {
         assert_eq!(authorized.service_id, snapshot.services[0].service_id);
         assert_eq!(authorized.name, "ssh");
         assert_eq!(authorized.protocol, "tcp");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn clear_devices_removes_registered_state() {
+        let db_path = test_db_path("clear-devices");
+        let db = Database::open(&db_path).await.expect("open test db");
+        let bootstrap = db.bootstrap_init().await.expect("bootstrap server");
+        let source_join = db
+            .create_join_token(
+                &bootstrap.admin_token,
+                CreateJoinTokenRequest {
+                    expires_in_minutes: None,
+                    note: Some("source".to_string()),
+                },
+            )
+            .await
+            .expect("create source join token");
+
+        let target = register_test_device(&db, bootstrap.first_join_token, "target").await;
+        let source = register_test_device(&db, source_join.join_token, "source").await;
+
+        db.upsert_service(
+            &target.session_token,
+            UpsertServiceRequest {
+                name: "ssh".to_string(),
+                allowed_device_ids: vec![source.device_id.clone()],
+            },
+        )
+        .await
+        .expect("upsert service");
+
+        let cleared = db
+            .clear_devices(&bootstrap.admin_token)
+            .await
+            .expect("clear devices");
+        assert_eq!(cleared.deleted_devices, 2);
+        assert_eq!(cleared.deleted_sessions, 2);
+        assert_eq!(cleared.deleted_services, 1);
+        assert_eq!(cleared.deleted_acl_entries, 1);
+
+        let devices = db
+            .admin_devices(&bootstrap.admin_token)
+            .await
+            .expect("list devices after clear");
+        assert!(devices.devices.is_empty());
+        assert!(db.network_snapshot(&source.session_token).await.is_err());
 
         let _ = std::fs::remove_file(db_path);
     }
