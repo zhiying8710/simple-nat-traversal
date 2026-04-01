@@ -24,7 +24,7 @@ fn run() -> Result<()> {
     }
     let single_instance_guard = Mutex::new(single_instance_guard);
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(state)
         .setup(move |app| {
             if let Some(guard) = single_instance_guard
@@ -50,6 +50,12 @@ fn run() -> Result<()> {
             desktop::stop_managed_agent,
             desktop::toggle_autostart,
         ])
-        .run(tauri::generate_context!())
-        .map_err(Into::into)
+        .build(tauri::generate_context!())?;
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            let _ = desktop::reveal_main_window(app_handle);
+        }
+    });
+    Ok(())
 }
