@@ -173,6 +173,7 @@ fn normalize_contents(value: &str) -> String {
     value.replace("\r\n", "\n").trim().to_string()
 }
 
+#[cfg(target_os = "macos")]
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")

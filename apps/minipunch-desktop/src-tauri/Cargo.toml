@@ -17,4 +17,3 @@ tokio.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2.5.3" }
-winres = "0.1.12"
