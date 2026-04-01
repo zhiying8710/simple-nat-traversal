@@ -654,7 +654,7 @@ onBeforeUnmount(() => {
               <input v-model="form.device_name" type="text" placeholder="我的设备" />
             </label>
           </div>
-          <div class="toolbar toolbar-grid">
+          <div class="toolbar toolbar-grid" style="margin-top: 10px;">
             <button class="action-button" :disabled="!canLoadConfig" @click="runAction('加载配置', () => loadConfig(buildSimplePayload()), { syncConfig: true })">加载配置</button>
             <button class="action-button secondary" :disabled="!canSaveConfig" @click="runAction('保存配置', () => saveConfig(buildSavePayload()), { syncConfig: true })">保存配置</button>
             <button class="action-button" :disabled="!canJoinNetwork" @click="runAction('加入网络', () => joinNetwork({ ...buildSimplePayload(), server_url: form.server_url, join_token: form.join_token, device_name: form.device_name }), { syncConfig: true, clearJoinToken: true })">加入网络</button>

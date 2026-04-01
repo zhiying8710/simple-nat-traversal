@@ -2,8 +2,10 @@
 
 mod autostart;
 mod desktop;
+mod single_instance;
 
 use anyhow::Result;
+use std::sync::Mutex;
 
 fn main() {
     if let Err(err) = run() {
@@ -16,10 +18,24 @@ fn run() -> Result<()> {
     let launch_args = desktop::DesktopLaunchArgs::parse();
     let initial_config_path = desktop::default_config_path();
     let state = desktop::SharedDesktopState::new(initial_config_path);
+    let single_instance_guard = single_instance::acquire_or_activate_existing()?;
+    if single_instance_guard.is_none() {
+        return Ok(());
+    }
+    let single_instance_guard = Mutex::new(single_instance_guard);
 
     tauri::Builder::default()
         .manage(state)
-        .setup(move |app| Ok(desktop::setup(app, launch_args.clone())?))
+        .setup(move |app| {
+            if let Some(guard) = single_instance_guard
+                .lock()
+                .expect("single-instance state poisoned")
+                .take()
+            {
+                single_instance::spawn_listener(guard, app.handle().clone());
+            }
+            Ok(desktop::setup(app, launch_args.clone())?)
+        })
         .on_window_event(desktop::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             desktop::desktop_snapshot,

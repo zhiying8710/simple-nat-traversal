@@ -462,7 +462,7 @@ fn install_tray(app: &AppHandle) -> Result<()> {
             tauri::async_runtime::spawn(async move {
                 match event_id.as_str() {
                     "show_window" => {
-                        let _ = show_main_window(&app_handle);
+                        let _ = reveal_main_window(&app_handle);
                     }
                     "hide_window" => {
                         let _ = hide_main_window(&app_handle);
@@ -494,10 +494,11 @@ fn install_tray(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-fn show_main_window(app: &AppHandle) -> Result<()> {
+pub fn reveal_main_window(app: &AppHandle) -> Result<()> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| anyhow!("main window is missing"))?;
+    let _ = window.unminimize();
     window.show()?;
     window.set_focus()?;
     Ok(())
@@ -518,8 +519,7 @@ fn toggle_main_window(app: &AppHandle) -> Result<()> {
     if window.is_visible()? {
         window.hide()?;
     } else {
-        window.show()?;
-        window.set_focus()?;
+        reveal_main_window(app)?;
     }
     Ok(())
 }
