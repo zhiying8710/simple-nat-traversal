@@ -14,12 +14,14 @@ use minipunch_core::{NetworkSnapshot, ServiceDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager, State, Window, WindowEvent};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio::time::sleep;
 
 use crate::autostart::{AutostartStatus, detect_autostart, disable_autostart, enable_autostart};
 
@@ -767,6 +769,27 @@ async fn stop_managed_agent_for_current_path(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
+async fn wait_for_managed_agent_shutdown(app: &AppHandle) -> Result<()> {
+    const MAX_ATTEMPTS: usize = 100;
+    for _ in 0..MAX_ATTEMPTS {
+        reconcile_managed_agent(app).await?;
+        let still_running = {
+            let state = app.state::<SharedDesktopState>();
+            let inner = state.inner.lock().expect("desktop state poisoned");
+            inner.managed_agent.task.is_some()
+                || matches!(
+                    inner.managed_agent.state,
+                    ManagedAgentState::Running | ManagedAgentState::Stopping
+                )
+        };
+        if !still_running {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    Err(anyhow!("等待受管 Agent 停止超时，请稍后重试"))
+}
+
 fn collect_published_services_from_drafts(
     drafts: &[PublishedServiceDraft],
 ) -> Result<Vec<PublishedServiceConfig>> {
@@ -1272,6 +1295,25 @@ pub async fn start_managed_agent(
 ) -> CommandResult<DesktopActionResponse> {
     let config_path = resolve_config_path(&state, Some(request.config_path.clone()));
     save_config_from_drafts(&request).map_err(|err| err.to_string())?;
+    reconcile_managed_agent(&app)
+        .await
+        .map_err(|err| err.to_string())?;
+    let was_running = {
+        let state = app.state::<SharedDesktopState>();
+        let inner = state.inner.lock().expect("desktop state poisoned");
+        matches!(
+            inner.managed_agent.state,
+            ManagedAgentState::Running | ManagedAgentState::Stopping
+        ) || inner.managed_agent.task.is_some()
+    };
+    if was_running {
+        stop_managed_agent_for_current_path(&app)
+            .await
+            .map_err(|err| err.to_string())?;
+        wait_for_managed_agent_shutdown(&app)
+            .await
+            .map_err(|err| err.to_string())?;
+    }
     start_managed_agent_for_path(
         &app,
         config_path.clone(),
@@ -1283,8 +1325,16 @@ pub async fn start_managed_agent(
         &state,
         &config_path,
         "success",
-        "已启动本地 Agent",
-        "桌面端开始托管 run 模式。",
+        if was_running {
+            "已重启本地 Agent"
+        } else {
+            "已启动本地 Agent"
+        },
+        if was_running {
+            "桌面端已按最新配置重启受管 run 模式。"
+        } else {
+            "桌面端开始托管 run 模式。"
+        },
         false,
     )
     .map_err(|err| err.to_string())

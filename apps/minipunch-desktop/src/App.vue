@@ -80,6 +80,9 @@ const canStartAgent = computed(
     !isAgentRunning.value &&
     !isAgentStopping.value,
 );
+const canApplyAgentConfig = computed(
+  () => !busy.value && hasConfigPath.value && !isAgentStopping.value,
+);
 const canStopAgent = computed(
   () => !busy.value && isAgentRunning.value && !isAgentStopping.value,
 );
@@ -347,6 +350,10 @@ function servicesForDevice(deviceId) {
   );
 }
 
+function isLocalDevice(deviceId) {
+  return deviceId === snapshot.value?.device_id;
+}
+
 function isServiceAlreadyForwarded(targetDeviceId, serviceName) {
   return form.forward_drafts.some(
     (draft) =>
@@ -377,6 +384,10 @@ function addForwardFromService(device, service) {
 
 async function hideToTray() {
   await getCurrentWindow().hide();
+}
+
+function applyAgentActionLabel() {
+  return isAgentRunning.value ? "保存并重启本地 Agent" : "保存并启动本地 Agent";
 }
 
 function formatTimestamp(timestamp) {
@@ -795,7 +806,9 @@ onBeforeUnmount(() => {
             <div class="toolbar">
               <button class="action-button" :disabled="busy" @click="addForwardDraft">添加转发</button>
               <button class="action-button secondary" :disabled="!canSaveConfig" @click="runAction('保存配置', () => saveConfig(buildSavePayload()), { syncConfig: true })">保存配置</button>
-              <button class="action-button" :disabled="!canStartAgent" @click="runAction('启动本地 Agent', () => startManagedAgent(buildSavePayload()), { syncConfig: false })">保存并启动</button>
+              <button class="action-button" :disabled="!canApplyAgentConfig" @click="runAction(applyAgentActionLabel(), () => startManagedAgent(buildSavePayload()), { syncConfig: false })">
+                {{ isAgentRunning ? "保存并重启" : "保存并启动" }}
+              </button>
             </div>
           </div>
 
@@ -902,15 +915,17 @@ onBeforeUnmount(() => {
                     <strong>{{ service.name }}</strong>
                     <p>{{ service.protocol }} · {{ service.service_id }}</p>
                   </div>
-                  <button
-                    v-if="!isServiceAlreadyForwarded(device.device_id, service.name)"
-                    class="mini-button"
-                    :disabled="busy"
-                    @click="addForwardFromService(device, service)"
-                  >
-                    添加转发
-                  </button>
-                  <span v-else class="mini-pill">已存在转发</span>
+                  <template v-if="!isLocalDevice(device.device_id)">
+                    <button
+                      v-if="!isServiceAlreadyForwarded(device.device_id, service.name)"
+                      class="mini-button"
+                      :disabled="busy"
+                      @click="addForwardFromService(device, service)"
+                    >
+                      添加转发
+                    </button>
+                    <span v-else class="mini-pill">已存在转发</span>
+                  </template>
                 </div>
               </div>
               <p v-else class="empty inline-empty">这个在线设备当前没有可见服务。</p>
