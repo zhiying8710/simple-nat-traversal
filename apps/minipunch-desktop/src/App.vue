@@ -29,6 +29,7 @@ const currentTab = ref("overview");
 const busyLabel = ref("");
 const notice = ref(null);
 const snapshot = ref(null);
+let draftKeySeed = 0;
 const form = reactive({
   config_path: "",
   server_url: "",
@@ -102,8 +103,47 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function emptyServiceDraft() {
+function nextDraftKey(prefix) {
+  draftKeySeed += 1;
+  return `${prefix}-${draftKeySeed}`;
+}
+
+function normalizeServiceDraft(draft, fallbackKey = null) {
   return {
+    ...draft,
+    __ui_key: draft.__ui_key ?? fallbackKey ?? nextDraftKey("service"),
+  };
+}
+
+function normalizeForwardDraft(draft, fallbackKey = null) {
+  return {
+    ...draft,
+    __ui_key: draft.__ui_key ?? fallbackKey ?? nextDraftKey("forward"),
+  };
+}
+
+function normalizeServiceDrafts(drafts, previousDrafts = []) {
+  return drafts.map((draft, index) =>
+    normalizeServiceDraft(draft, previousDrafts[index]?.__ui_key ?? null),
+  );
+}
+
+function normalizeForwardDrafts(drafts, previousDrafts = []) {
+  return drafts.map((draft, index) =>
+    normalizeForwardDraft(draft, previousDrafts[index]?.__ui_key ?? null),
+  );
+}
+
+function serializeServiceDrafts(drafts) {
+  return drafts.map(({ __ui_key, ...draft }) => clone(draft));
+}
+
+function serializeForwardDrafts(drafts) {
+  return drafts.map(({ __ui_key, ...draft }) => clone(draft));
+}
+
+function emptyServiceDraft() {
+  return normalizeServiceDraft({
     name: "ssh",
     target_host: "127.0.0.1",
     target_port: "22",
@@ -112,11 +152,11 @@ function emptyServiceDraft() {
     direct_udp_bind_addr: "",
     direct_candidate_type: "local",
     direct_wait_seconds: "5",
-  };
+  });
 }
 
 function emptyForwardDraft() {
-  return {
+  return normalizeForwardDraft({
     name: "office-ssh",
     target_device_id: "",
     service_name: "ssh",
@@ -126,7 +166,7 @@ function emptyForwardDraft() {
     direct_udp_bind_addr: "",
     direct_candidate_type: "local",
     direct_wait_seconds: "5",
-  };
+  });
 }
 
 function showNotice(level, title, message) {
@@ -139,11 +179,19 @@ function showNotice(level, title, message) {
 }
 
 function syncFormFromSnapshot(next) {
+  const previousServiceDrafts = form.service_drafts;
+  const previousForwardDrafts = form.forward_drafts;
   form.config_path = next.config_path ?? "";
   form.server_url = next.server_url ?? "";
   form.device_name = next.device_name ?? "";
-  form.service_drafts = clone(next.service_drafts ?? []);
-  form.forward_drafts = clone(next.forward_drafts ?? []);
+  form.service_drafts = normalizeServiceDrafts(
+    clone(next.service_drafts ?? []),
+    previousServiceDrafts,
+  );
+  form.forward_drafts = normalizeForwardDrafts(
+    clone(next.forward_drafts ?? []),
+    previousForwardDrafts,
+  );
 }
 
 function applySnapshot(next, options = {}) {
@@ -160,8 +208,8 @@ function buildSavePayload() {
     config_path: form.config_path,
     server_url: form.server_url,
     device_name: form.device_name,
-    service_drafts: clone(form.service_drafts),
-    forward_drafts: clone(form.forward_drafts),
+    service_drafts: serializeServiceDrafts(form.service_drafts),
+    forward_drafts: serializeForwardDrafts(form.forward_drafts),
   };
 }
 
@@ -308,7 +356,7 @@ function isServiceAlreadyForwarded(targetDeviceId, serviceName) {
 }
 
 function addForwardFromService(device, service) {
-  form.forward_drafts.push({
+  form.forward_drafts.push(normalizeForwardDraft({
     name: suggestForwardName(device.device_name, service.name),
     target_device_id: device.device_id,
     service_name: service.name,
@@ -318,7 +366,7 @@ function addForwardFromService(device, service) {
     direct_udp_bind_addr: "",
     direct_candidate_type: "local",
     direct_wait_seconds: "5",
-  });
+  }));
   currentTab.value = "forwards";
   showNotice(
     "success",
@@ -682,7 +730,7 @@ onBeforeUnmount(() => {
           <div v-if="form.service_drafts.length" class="card-stack">
             <article
               v-for="(service, index) in form.service_drafts"
-              :key="`${service.name}-${index}`"
+              :key="service.__ui_key"
               class="editor-card"
             >
               <div class="editor-header">
@@ -754,7 +802,7 @@ onBeforeUnmount(() => {
           <div v-if="form.forward_drafts.length" class="card-stack">
             <article
               v-for="(rule, index) in form.forward_drafts"
-              :key="`${rule.name}-${index}`"
+              :key="rule.__ui_key"
               class="editor-card"
             >
               <div class="editor-header">
