@@ -30,7 +30,6 @@ use crate::runtime_state::{ForwardRuntimeHook, RuntimeStateWriter};
 
 const RELAY_MAX_BATCH_SIZE: usize = 16;
 const RELAY_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
-const RELAY_KEEPALIVE_TIMEOUT_SECONDS: i64 = 65;
 
 #[derive(Clone)]
 pub struct RelayConnection {
@@ -103,7 +102,6 @@ struct RelayConnectionInner {
     channel_routes: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<RelayEnvelope>>>>,
     closed: AtomicBool,
     closed_notify: Notify,
-    last_inbound_at: AtomicI64,
     reader_task: StdMutex<Option<JoinHandle<()>>>,
     writer_task: StdMutex<Option<JoinHandle<()>>>,
     keepalive_task: StdMutex<Option<JoinHandle<()>>>,
@@ -115,11 +113,6 @@ impl RelayConnectionInner {
             return;
         }
         self.closed_notify.notify_waiters();
-    }
-
-    fn note_inbound_activity(&self) {
-        self.last_inbound_at
-            .store(unix_timestamp_now(), Ordering::SeqCst);
     }
 
     fn shutdown_tasks(&self) {
@@ -211,7 +204,6 @@ impl RelayConnection {
             channel_routes: channel_routes.clone(),
             closed: AtomicBool::new(false),
             closed_notify: Notify::new(),
-            last_inbound_at: AtomicI64::new(unix_timestamp_now()),
             reader_task: StdMutex::new(None),
             writer_task: StdMutex::new(None),
             keepalive_task: StdMutex::new(None),
@@ -273,7 +265,6 @@ impl RelayConnection {
                         };
                         match message {
                             Ok(Message::Text(text)) => {
-                                closed_for_reader.note_inbound_activity();
                                 match decode_relay_transport_frame(text.as_bytes()) {
                                     Ok(envelopes) => {
                                         for envelope in envelopes {
@@ -307,7 +298,6 @@ impl RelayConnection {
                                 }
                             }
                             Ok(Message::Binary(bytes)) => {
-                                closed_for_reader.note_inbound_activity();
                                 match decode_relay_transport_frame(&bytes) {
                                     Ok(envelopes) => {
                                         for envelope in envelopes {
@@ -341,16 +331,12 @@ impl RelayConnection {
                                 }
                             }
                             Ok(Message::Close(_)) => {
-                                closed_for_reader.note_inbound_activity();
                                 break;
                             }
                             Ok(Message::Ping(_)) => {
-                                closed_for_reader.note_inbound_activity();
                                 let _ = outbound_for_reader.send(RelayEnvelope::Pong);
                             }
-                            Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {
-                                closed_for_reader.note_inbound_activity();
-                            }
+                            Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
                             Err(err) => {
                                 warn!("relay websocket read failed: {err}");
                                 break;
@@ -391,16 +377,6 @@ impl RelayConnection {
                     break;
                 }
                 if outbound_for_keepalive.send(RelayEnvelope::Ping).is_err() {
-                    closed_for_keepalive.mark_closed();
-                    break;
-                }
-                let idle_for = unix_timestamp_now()
-                    .saturating_sub(closed_for_keepalive.last_inbound_at.load(Ordering::SeqCst));
-                if idle_for > RELAY_KEEPALIVE_TIMEOUT_SECONDS {
-                    warn!(
-                        "relay websocket has been idle for {}s without any inbound frames; reconnecting",
-                        idle_for
-                    );
                     closed_for_keepalive.mark_closed();
                     break;
                 }
