@@ -17,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Notify, mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{self, timeout};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -29,6 +29,8 @@ use crate::config::PublishedServiceConfig;
 use crate::runtime_state::{ForwardRuntimeHook, RuntimeStateWriter};
 
 const RELAY_MAX_BATCH_SIZE: usize = 16;
+const RELAY_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const RELAY_KEEPALIVE_TIMEOUT_SECONDS: i64 = 65;
 
 #[derive(Clone)]
 pub struct RelayConnection {
@@ -101,8 +103,10 @@ struct RelayConnectionInner {
     channel_routes: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<RelayEnvelope>>>>,
     closed: AtomicBool,
     closed_notify: Notify,
+    last_inbound_at: AtomicI64,
     reader_task: StdMutex<Option<JoinHandle<()>>>,
     writer_task: StdMutex<Option<JoinHandle<()>>>,
+    keepalive_task: StdMutex<Option<JoinHandle<()>>>,
 }
 
 impl RelayConnectionInner {
@@ -113,11 +117,24 @@ impl RelayConnectionInner {
         self.closed_notify.notify_waiters();
     }
 
+    fn note_inbound_activity(&self) {
+        self.last_inbound_at
+            .store(unix_timestamp_now(), Ordering::SeqCst);
+    }
+
     fn shutdown_tasks(&self) {
         if let Some(task) = self.writer_task.lock().expect("writer task lock").take() {
             task.abort();
         }
         if let Some(task) = self.reader_task.lock().expect("reader task lock").take() {
+            task.abort();
+        }
+        if let Some(task) = self
+            .keepalive_task
+            .lock()
+            .expect("keepalive task lock")
+            .take()
+        {
             task.abort();
         }
     }
@@ -194,8 +211,10 @@ impl RelayConnection {
             channel_routes: channel_routes.clone(),
             closed: AtomicBool::new(false),
             closed_notify: Notify::new(),
+            last_inbound_at: AtomicI64::new(unix_timestamp_now()),
             reader_task: StdMutex::new(None),
             writer_task: StdMutex::new(None),
+            keepalive_task: StdMutex::new(None),
         });
 
         let closed_for_writer = inner.clone();
@@ -233,6 +252,8 @@ impl RelayConnection {
                     }
                 }
             }
+
+            closed_for_writer.mark_closed();
         });
 
         let routes_for_reader = channel_routes.clone();
@@ -252,6 +273,7 @@ impl RelayConnection {
                         };
                         match message {
                             Ok(Message::Text(text)) => {
+                                closed_for_reader.note_inbound_activity();
                                 match decode_relay_transport_frame(text.as_bytes()) {
                                     Ok(envelopes) => {
                                         for envelope in envelopes {
@@ -285,6 +307,7 @@ impl RelayConnection {
                                 }
                             }
                             Ok(Message::Binary(bytes)) => {
+                                closed_for_reader.note_inbound_activity();
                                 match decode_relay_transport_frame(&bytes) {
                                     Ok(envelopes) => {
                                         for envelope in envelopes {
@@ -318,12 +341,16 @@ impl RelayConnection {
                                 }
                             }
                             Ok(Message::Close(_)) => {
+                                closed_for_reader.note_inbound_activity();
                                 break;
                             }
                             Ok(Message::Ping(_)) => {
+                                closed_for_reader.note_inbound_activity();
                                 let _ = outbound_for_reader.send(RelayEnvelope::Pong);
                             }
-                            Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
+                            Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {
+                                closed_for_reader.note_inbound_activity();
+                            }
                             Err(err) => {
                                 warn!("relay websocket read failed: {err}");
                                 break;
@@ -342,8 +369,50 @@ impl RelayConnection {
             clear_all_channels(&routes_for_reader).await;
         });
 
+        let closed_for_keepalive = inner.clone();
+        let outbound_for_keepalive = inner.outbound.clone();
+        let keepalive = tokio::spawn(async move {
+            loop {
+                let closed = closed_for_keepalive.closed_notify.notified();
+                tokio::pin!(closed);
+                if closed_for_keepalive.closed.load(Ordering::SeqCst) {
+                    break;
+                }
+                tokio::select! {
+                    _ = time::sleep(RELAY_KEEPALIVE_INTERVAL) => {}
+                    _ = &mut closed => {
+                        if closed_for_keepalive.closed.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+                if closed_for_keepalive.closed.load(Ordering::SeqCst) {
+                    break;
+                }
+                if outbound_for_keepalive.send(RelayEnvelope::Ping).is_err() {
+                    closed_for_keepalive.mark_closed();
+                    break;
+                }
+                let idle_for = unix_timestamp_now()
+                    .saturating_sub(closed_for_keepalive.last_inbound_at.load(Ordering::SeqCst));
+                if idle_for > RELAY_KEEPALIVE_TIMEOUT_SECONDS {
+                    warn!(
+                        "relay websocket has been idle for {}s without any inbound frames; reconnecting",
+                        idle_for
+                    );
+                    closed_for_keepalive.mark_closed();
+                    break;
+                }
+            }
+        });
+
         *inner.writer_task.lock().expect("writer task lock") = Some(writer);
         *inner.reader_task.lock().expect("reader task lock") = Some(reader);
+        *inner
+            .keepalive_task
+            .lock()
+            .expect("keepalive task lock") = Some(keepalive);
 
         Ok((Self { inner }, incoming_rx))
     }
