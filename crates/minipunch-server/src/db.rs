@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use minipunch_core::{
-    AdminClearDevicesResponse, AdminDevicesResponse, BootstrapInitResponse, CreateJoinTokenRequest, DeviceSummary,
-    DirectConnectionCandidate, DirectRendezvousParticipant, DirectRendezvousSession,
-    HeartbeatResponse, JoinTokenResponse, NetworkSnapshot, PendingDirectRendezvousResponse,
-    RegisterDeviceRequest, RegisterDeviceResponse, ServiceDefinition, StartDirectRendezvousRequest,
-    UpdateDirectRendezvousCandidatesRequest, UpsertServiceRequest, device_id_from_public_key,
-    generate_token, hash_secret, registration_message, relay_key_binding_message, service_id,
-    unix_timestamp_now, verify_signature_base64,
+    AdminClearDevicesResponse, AdminDevicesResponse, BootstrapInitResponse, CreateJoinTokenRequest,
+    DeleteServiceRequest, DeviceSummary, DirectConnectionCandidate, DirectRendezvousParticipant,
+    DirectRendezvousSession, HeartbeatResponse, JoinTokenResponse, NetworkSnapshot,
+    PendingDirectRendezvousResponse, RegisterDeviceRequest, RegisterDeviceResponse,
+    ServiceDefinition, StartDirectRendezvousRequest, UpdateDirectRendezvousCandidatesRequest,
+    UpsertServiceRequest, device_id_from_public_key, generate_token, hash_secret,
+    registration_message, relay_key_binding_message, service_id, unix_timestamp_now,
+    verify_signature_base64,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::Mutex;
@@ -361,6 +362,57 @@ impl Database {
                 params![service_id, allowed_device_id],
             )?;
         }
+        tx.commit()?;
+
+        Ok(ServiceDefinition {
+            service_id,
+            owner_device_id: device_id,
+            name: request.name,
+            protocol: "tcp".to_string(),
+        })
+    }
+
+    pub async fn delete_service(
+        &self,
+        session_token: &str,
+        request: DeleteServiceRequest,
+    ) -> Result<ServiceDefinition> {
+        if request.name.trim().is_empty() {
+            return Err(ServerError::BadRequest(
+                "service name cannot be empty".to_string(),
+            ));
+        }
+
+        let device_id = self.session_device_id(session_token).await?;
+        let service_id = service_id(&device_id, &request.name);
+        let mut conn = self.conn.lock().await;
+        let tx = conn.transaction()?;
+        let service_exists = tx
+            .query_row(
+                "SELECT 1 FROM services WHERE service_id = ?1 AND owner_device_id = ?2",
+                params![service_id, device_id],
+                |_row| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !service_exists {
+            return Err(ServerError::NotFound(format!(
+                "service {} is not published by this device",
+                request.name
+            )));
+        }
+        tx.execute(
+            "DELETE FROM service_acl WHERE service_id = ?1",
+            params![service_id],
+        )?;
+        tx.execute(
+            "DELETE FROM direct_rendezvous_attempts WHERE service_id = ?1",
+            params![service_id],
+        )?;
+        tx.execute(
+            "DELETE FROM services WHERE service_id = ?1 AND owner_device_id = ?2",
+            params![service_id, device_id],
+        )?;
         tx.commit()?;
 
         Ok(ServiceDefinition {
@@ -992,7 +1044,8 @@ mod tests {
             .await
             .expect("create join token");
 
-        let registered = register_test_device(&db, join.join_token.clone(), "deadline-target").await;
+        let registered =
+            register_test_device(&db, join.join_token.clone(), "deadline-target").await;
         assert_eq!(registered.session_expires_at, join.expires_at);
 
         let _ = std::fs::remove_file(db_path);
@@ -1157,6 +1210,68 @@ mod tests {
             .expect("list devices after clear");
         assert!(devices.devices.is_empty());
         assert!(db.network_snapshot(&source.session_token).await.is_err());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn delete_service_removes_acl_and_snapshot_visibility() {
+        let db_path = test_db_path("delete-service");
+        let db = Database::open(&db_path).await.expect("open test db");
+        let bootstrap = db.bootstrap_init().await.expect("bootstrap server");
+        let source_join = db
+            .create_join_token(
+                &bootstrap.admin_token,
+                CreateJoinTokenRequest {
+                    expires_in_minutes: None,
+                    note: Some("source".to_string()),
+                },
+            )
+            .await
+            .expect("create source join token");
+
+        let target = register_test_device(&db, bootstrap.first_join_token, "target").await;
+        let source = register_test_device(&db, source_join.join_token, "source").await;
+
+        db.upsert_service(
+            &target.session_token,
+            UpsertServiceRequest {
+                name: "rdp".to_string(),
+                allowed_device_ids: vec![source.device_id.clone()],
+            },
+        )
+        .await
+        .expect("upsert service");
+
+        let deleted = db
+            .delete_service(
+                &target.session_token,
+                DeleteServiceRequest {
+                    name: "rdp".to_string(),
+                },
+            )
+            .await
+            .expect("delete service");
+        assert_eq!(deleted.name, "rdp");
+        assert_eq!(deleted.owner_device_id, target.device_id);
+
+        let snapshot = db
+            .network_snapshot(&source.session_token)
+            .await
+            .expect("load network snapshot after delete");
+        assert!(snapshot.services.is_empty());
+
+        {
+            let conn = db.conn.lock().await;
+            let service_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM services", [], |row| row.get(0))
+                .expect("count services");
+            let acl_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM service_acl", [], |row| row.get(0))
+                .expect("count service acl");
+            assert_eq!(service_count, 0);
+            assert_eq!(acl_count, 0);
+        }
 
         let _ = std::fs::remove_file(db_path);
     }

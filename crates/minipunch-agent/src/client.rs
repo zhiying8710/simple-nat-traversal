@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, bail};
 use minipunch_core::{
-    DirectRendezvousSession, ErrorResponse, HeartbeatResponse, NetworkSnapshot,
-    PendingDirectRendezvousResponse, RegisterDeviceRequest, RegisterDeviceResponse,
-    ServiceDefinition, StartDirectRendezvousRequest, UpdateDirectRendezvousCandidatesRequest,
-    UpsertServiceRequest,
+    DeleteServiceRequest, DirectRendezvousSession, ErrorResponse, HeartbeatResponse,
+    NetworkSnapshot, PendingDirectRendezvousResponse, RegisterDeviceRequest,
+    RegisterDeviceResponse, ServiceDefinition, StartDirectRendezvousRequest,
+    UpdateDirectRendezvousCandidatesRequest, UpsertServiceRequest,
 };
 
 #[derive(Clone)]
@@ -58,6 +58,22 @@ impl ControlPlaneClient {
             .send()
             .await
             .context("failed to call upsert service endpoint")?;
+        parse_json_response(response).await
+    }
+
+    pub async fn delete_service(
+        &self,
+        session_token: &str,
+        request: &DeleteServiceRequest,
+    ) -> Result<ServiceDefinition> {
+        let response = self
+            .http
+            .delete(self.endpoint("/api/v1/services"))
+            .bearer_auth(session_token)
+            .json(request)
+            .send()
+            .await
+            .context("failed to call delete service endpoint")?;
         parse_json_response(response).await
     }
 

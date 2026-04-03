@@ -59,6 +59,11 @@ pub struct UpsertServiceRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteServiceRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDefinition {
     pub service_id: String,
     pub owner_device_id: String,

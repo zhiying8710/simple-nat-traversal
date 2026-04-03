@@ -180,8 +180,9 @@ impl RelayConnection {
     pub async fn connect(
         server_url: &str,
         session_token: &str,
+        accepts_incoming_channels: bool,
     ) -> Result<(Self, mpsc::UnboundedReceiver<RelayIncomingChannel>)> {
-        let ws_url = websocket_url(server_url)?;
+        let ws_url = websocket_url(server_url, accepts_incoming_channels)?;
         let mut request = ws_url
             .into_client_request()
             .map_err(|err| anyhow!("failed to build websocket request: {err}"))?;
@@ -403,10 +404,7 @@ impl RelayConnection {
 
         *inner.writer_task.lock().expect("writer task lock") = Some(writer);
         *inner.reader_task.lock().expect("reader task lock") = Some(reader);
-        *inner
-            .keepalive_task
-            .lock()
-            .expect("keepalive task lock") = Some(keepalive);
+        *inner.keepalive_task.lock().expect("keepalive task lock") = Some(keepalive);
 
         Ok((Self { inner }, incoming_rx))
     }
@@ -446,6 +444,12 @@ impl RelayConnection {
                 return;
             }
         }
+    }
+
+    pub async fn close(&self) {
+        self.inner.mark_closed();
+        self.inner.shutdown_tasks();
+        clear_all_channels(&self.inner.channel_routes).await;
     }
 }
 
@@ -499,7 +503,8 @@ pub(crate) async fn run_relay_service_loop(
     published_services: Vec<PublishedServiceConfig>,
     runtime_state: Option<RuntimeStateWriter>,
 ) -> Result<()> {
-    let (relay, mut incoming_rx) = RelayConnection::connect(&server_url, &session_token).await?;
+    let (relay, mut incoming_rx) =
+        RelayConnection::connect(&server_url, &session_token, true).await?;
     let published_services = PublishedServiceDirectory::new(&local_device_id, &published_services);
 
     while let Some(channel) = incoming_rx.recv().await {
@@ -580,7 +585,7 @@ pub(crate) async fn run_local_forwarder_loop_with_control(
     tracker: Option<RelayForwarderTracker>,
     mut shutdown_rx: Option<watch::Receiver<bool>>,
 ) -> Result<()> {
-    let (relay, _) = RelayConnection::connect(&server_url, &session_token).await?;
+    let (relay, _) = RelayConnection::connect(&server_url, &session_token, false).await?;
     let listener = TcpListener::bind(&local_bind_addr)
         .await
         .with_context(|| format!("failed to bind local forward address {local_bind_addr}"))?;
@@ -743,7 +748,29 @@ pub(crate) async fn handle_local_forward_connection(
         wait_for_channel_open(&mut channel_rx),
     )
     .await
-    .map_err(|_| anyhow!("timed out waiting for remote service to accept relay channel"))??;
+    .map_err(|_| anyhow!("timed out waiting for remote service to accept relay channel"));
+
+    let open_result = match open_result {
+        Ok(Ok(open_result)) => open_result,
+        Ok(Err(err)) => {
+            if let Some(runtime_hook) = &runtime_hook {
+                runtime_hook.note_failure("channel_open", err.to_string());
+            }
+            relay.unregister_channel(&channel_id).await;
+            return Err(err);
+        }
+        Err(err) => {
+            if let Some(runtime_hook) = &runtime_hook {
+                runtime_hook.note_failure("channel_open", err.to_string());
+            }
+            let _ = relay.send(RelayEnvelope::ChannelClose {
+                channel_id: channel_id.clone(),
+                reason: Some(err.to_string()),
+            });
+            relay.unregister_channel(&channel_id).await;
+            return Err(err);
+        }
+    };
 
     match open_result {
         ChannelOpenState::Accepted => {
@@ -758,6 +785,11 @@ pub(crate) async fn handle_local_forward_connection(
             let bridge_result =
                 bridge_stream_with_channel(relay, channel_id, socket, channel_rx, sender, receiver)
                     .await;
+            if let Err(err) = &bridge_result
+                && let Some(runtime_hook) = &runtime_hook
+            {
+                runtime_hook.note_failure("data_plane", err.to_string());
+            }
             if let Some(runtime_hook) = &runtime_hook {
                 runtime_hook.note_connection_closed(peer_addr);
             }
@@ -765,6 +797,12 @@ pub(crate) async fn handle_local_forward_connection(
         }
         ChannelOpenState::Rejected(reason) => {
             relay.unregister_channel(&channel_id).await;
+            if let Some(runtime_hook) = &runtime_hook {
+                runtime_hook.note_failure(
+                    "channel_open",
+                    format!("remote service rejected relay channel: {reason}"),
+                );
+            }
             bail!("remote service rejected relay channel: {reason}");
         }
     }
@@ -936,12 +974,16 @@ async fn clear_all_channels(
     }
 }
 
-fn websocket_url(server_url: &str) -> Result<String> {
+fn websocket_url(server_url: &str, accepts_incoming_channels: bool) -> Result<String> {
     if let Some(rest) = server_url.strip_prefix("https://") {
-        return Ok(format!("wss://{rest}/api/v1/relay/ws"));
+        return Ok(format!(
+            "wss://{rest}/api/v1/relay/ws?incoming={accepts_incoming_channels}"
+        ));
     }
     if let Some(rest) = server_url.strip_prefix("http://") {
-        return Ok(format!("ws://{rest}/api/v1/relay/ws"));
+        return Ok(format!(
+            "ws://{rest}/api/v1/relay/ws?incoming={accepts_incoming_channels}"
+        ));
     }
     bail!("server_url must start with http:// or https://")
 }

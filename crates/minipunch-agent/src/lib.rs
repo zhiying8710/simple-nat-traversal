@@ -12,11 +12,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use minipunch_core::{
-    DeviceIdentity, DirectConnectionCandidate, DirectRendezvousSession, NetworkSnapshot,
-    PendingDirectRendezvousResponse, RegisterDeviceRequest, RelayKeypair, ServiceDefinition,
-    StartDirectRendezvousRequest, UpdateDirectRendezvousCandidatesRequest, UpsertServiceRequest,
-    device_id_from_public_key, registration_message, relay_key_binding_message,
-    verify_signature_base64,
+    DeleteServiceRequest, DeviceIdentity, DirectConnectionCandidate, DirectRendezvousSession,
+    NetworkSnapshot, PendingDirectRendezvousResponse, RegisterDeviceRequest, RelayKeypair,
+    ServiceDefinition, StartDirectRendezvousRequest, UpdateDirectRendezvousCandidatesRequest,
+    UpsertServiceRequest, device_id_from_public_key, registration_message,
+    relay_key_binding_message, verify_signature_base64,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -226,6 +226,31 @@ impl AgentRuntime {
         }
         self.save()?;
         Ok(service)
+    }
+
+    pub async fn delete_published_service(
+        &mut self,
+        service_name: &str,
+    ) -> Result<ServiceDefinition> {
+        if service_name.trim().is_empty() {
+            return Err(anyhow!("service name cannot be empty"));
+        }
+        self.ensure_session().await?;
+        let session_token = self.current_session_token()?;
+        let deleted = self
+            .client
+            .delete_service(
+                &session_token,
+                &DeleteServiceRequest {
+                    name: service_name.to_string(),
+                },
+            )
+            .await?;
+        self.config
+            .published_services
+            .retain(|service| service.name != service_name);
+        self.save()?;
+        Ok(deleted)
     }
 
     pub async fn network_snapshot(&mut self) -> Result<NetworkSnapshot> {
@@ -2322,7 +2347,7 @@ async fn run_auto_forward_loop(
             target_device_id, service_name, local_bind_addr
         );
         let relay_tracker = RelayForwarderTracker::new();
-        let relay = match RelayConnection::connect(&server_url, &session_token).await {
+        let relay = match RelayConnection::connect(&server_url, &session_token, false).await {
             Ok((relay, _)) => relay,
             Err(err) => {
                 warn!(

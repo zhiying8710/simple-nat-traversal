@@ -1,21 +1,22 @@
 use axum::extract::{
-    Path, State,
+    Path, Query, State,
     ws::{Message, WebSocket, WebSocketUpgrade},
 };
 use axum::http::{HeaderMap, StatusCode};
 use axum::{
     Json, Router,
     response::Response,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use minipunch_core::{
-    AdminClearDevicesResponse, AdminDevicesResponse, BootstrapInitResponse, CreateJoinTokenRequest, DirectRendezvousSession,
-    HeartbeatResponse, JoinTokenResponse, NetworkSnapshot, PendingDirectRendezvousResponse,
-    RegisterDeviceRequest, RegisterDeviceResponse, RelayEnvelope, RelayTransportFrame,
-    ServiceDefinition, StartDirectRendezvousRequest, UpdateDirectRendezvousCandidatesRequest,
-    UpsertServiceRequest,
+    AdminClearDevicesResponse, AdminDevicesResponse, BootstrapInitResponse, CreateJoinTokenRequest,
+    DeleteServiceRequest, DirectRendezvousSession, HeartbeatResponse, JoinTokenResponse,
+    NetworkSnapshot, PendingDirectRendezvousResponse, RegisterDeviceRequest,
+    RegisterDeviceResponse, RelayEnvelope, RelayTransportFrame, ServiceDefinition,
+    StartDirectRendezvousRequest, UpdateDirectRendezvousCandidatesRequest, UpsertServiceRequest,
 };
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -31,6 +32,11 @@ pub struct AppState {
     pub relay_hub: RelayHub,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RelayWsQuery {
+    incoming: Option<bool>,
+}
+
 pub fn build_router(db: Database) -> Router {
     let relay_hub = RelayHub::new();
     Router::new()
@@ -44,6 +50,7 @@ pub fn build_router(db: Database) -> Router {
         .route("/api/v1/devices/register", post(register_device))
         .route("/api/v1/devices/heartbeat", post(heartbeat))
         .route("/api/v1/services/upsert", post(upsert_service))
+        .route("/api/v1/services", delete(delete_service))
         .route("/api/v1/network", get(network_snapshot))
         .route(
             "/api/v1/direct/rendezvous/start",
@@ -130,6 +137,16 @@ async fn upsert_service(
     Ok(Json(response))
 }
 
+async fn delete_service(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<DeleteServiceRequest>,
+) -> Result<Json<ServiceDefinition>> {
+    let session_token = bearer_token_from_headers(&headers)?;
+    let response = state.db.delete_service(session_token, request).await?;
+    Ok(Json(response))
+}
+
 async fn network_snapshot(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -190,20 +207,26 @@ async fn update_direct_rendezvous_candidates(
 
 async fn relay_ws(
     ws: WebSocketUpgrade,
+    Query(query): Query<RelayWsQuery>,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response> {
     let session_token = bearer_token_from_headers(&headers)?.to_string();
     let device_id = state.db.session_device_id(&session_token).await?;
     state.db.touch_device(&device_id).await?;
-    Ok(ws.on_upgrade(move |socket| handle_relay_socket(state, device_id, socket)))
+    Ok(ws.on_upgrade(move |socket| handle_relay_socket(state, device_id, query.incoming, socket)))
 }
 
-async fn handle_relay_socket(state: AppState, device_id: String, socket: WebSocket) {
+async fn handle_relay_socket(
+    state: AppState,
+    device_id: String,
+    incoming: Option<bool>,
+    socket: WebSocket,
+) {
     let (sender, mut receiver) = mpsc::unbounded_channel::<RelayEnvelope>();
-    state
+    let connection_id = state
         .relay_hub
-        .register_device(device_id.clone(), sender.clone())
+        .register_device(device_id.clone(), sender.clone(), incoming)
         .await;
     let _ = sender.send(RelayEnvelope::Ready {
         device_id: device_id.clone(),
@@ -239,7 +262,7 @@ async fn handle_relay_socket(state: AppState, device_id: String, socket: WebSock
                     for envelope in envelopes {
                         state
                             .relay_hub
-                            .handle_envelope(&state.db, &device_id, envelope)
+                            .handle_envelope(&state.db, &device_id, &connection_id, envelope)
                             .await;
                     }
                 }
@@ -258,7 +281,7 @@ async fn handle_relay_socket(state: AppState, device_id: String, socket: WebSock
                     for envelope in envelopes {
                         state
                             .relay_hub
-                            .handle_envelope(&state.db, &device_id, envelope)
+                            .handle_envelope(&state.db, &device_id, &connection_id, envelope)
                             .await;
                     }
                 }
@@ -278,7 +301,10 @@ async fn handle_relay_socket(state: AppState, device_id: String, socket: WebSock
         }
     }
 
-    state.relay_hub.disconnect_device(&device_id).await;
+    state
+        .relay_hub
+        .disconnect_device(&device_id, &connection_id)
+        .await;
     writer.abort();
 }
 
