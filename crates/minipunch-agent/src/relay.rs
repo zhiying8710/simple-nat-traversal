@@ -30,6 +30,7 @@ use crate::runtime_state::{ForwardRuntimeHook, RuntimeStateWriter};
 
 const RELAY_MAX_BATCH_SIZE: usize = 16;
 const RELAY_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const RELAY_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub struct RelayConnection {
@@ -210,6 +211,7 @@ impl RelayConnection {
         });
 
         let closed_for_writer = inner.clone();
+        let routes_for_writer = channel_routes.clone();
         let writer = tokio::spawn(async move {
             loop {
                 let closed = closed_for_writer.closed_notify.notified();
@@ -232,9 +234,24 @@ impl RelayConnection {
                                 break;
                             }
                         };
-                        if let Err(err) = ws_writer.send(Message::Binary(encoded.into())).await {
-                            warn!("failed to write relay websocket frame: {err}");
-                            break;
+                        match time::timeout(
+                            RELAY_WRITE_TIMEOUT,
+                            ws_writer.send(Message::Binary(encoded.into())),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(err)) => {
+                                warn!("failed to write relay websocket frame: {err}");
+                                break;
+                            }
+                            Err(_) => {
+                                warn!(
+                                    "timed out writing relay websocket frame after {}s",
+                                    RELAY_WRITE_TIMEOUT.as_secs()
+                                );
+                                break;
+                            }
                         }
                     }
                     _ = &mut closed => {
@@ -246,6 +263,7 @@ impl RelayConnection {
             }
 
             closed_for_writer.mark_closed();
+            clear_all_channels(&routes_for_writer).await;
         });
 
         let routes_for_reader = channel_routes.clone();

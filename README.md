@@ -80,7 +80,8 @@
 - 桌面端自启动管理（macOS `launchd` / Linux XDG autostart / Windows Startup folder）
 - `scripts/package-macos.sh` / `scripts/package-linux.sh` / `scripts/package-windows.ps1` 三套桌面打包脚本
 - `scripts/package-linux-server.sh` Linux 服务端打包脚本
-- GitHub Actions 直接发版工作流（输入版本号后直接创建 Release 并上传 Linux server + macOS/Windows client 包）
+- `scripts/package-linux-agent.sh` Linux 命令行客户端打包脚本
+- GitHub Actions 直接发版工作流（输入版本号后直接创建 Release 并上传 Linux server + Linux CLI client + macOS/Windows client 包）
 
 已经打通但仍属早期版本：
 
@@ -130,7 +131,8 @@
 - 当前 Windows 桌面端已经启用 GUI 子系统，正常启动不再弹出 cmd 窗口；Windows 自启动入口也从 Startup folder 的 `.cmd` 改成了隐藏式 `.vbs` launcher，并会在登录后自动拉起受管 agent。
 - 当前 Windows 自启动在进入后台前会先做配置预检；如果当前配置还没完成入网、缺少设备身份材料，或关键字段不完整，桌面端会直接退出进程，不会残留一个隐藏但不可用的托盘进程。
 - 当前仓库还提供 [`scripts/package-linux-server.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-linux-server.sh)，用于生成仅包含 `minipunch-server` 和 systemd 示例单元的 Linux server `.tar.gz` 发布包。
-- 当前仓库已补 [`release.yml`](/Users/zhiying8710/wk/simple-nat-traversal/.github/workflows/release.yml) 手动发版工作流：输入稳定版本号 `x.y.z` 后，会按 `v<version>` 生成 release tag，并先检查现有 tag；若存在更高版本 tag 会直接失败，若存在同版本 tag/release 会先删除，再直接创建 GitHub Release，并分别上传 Linux server、macOS client、Windows client 三个发布包；整个流程不依赖 Actions artifact 中转。
+- 当前仓库还提供 [`scripts/package-linux-agent.sh`](/Users/zhiying8710/wk/simple-nat-traversal/scripts/package-linux-agent.sh)，用于生成仅包含 `minipunch-agent` 和 headless CLI 使用说明的 Linux CLI client `.tar.gz` 发布包。
+- 当前仓库已补 [`release.yml`](/Users/zhiying8710/wk/simple-nat-traversal/.github/workflows/release.yml) 手动发版工作流：输入稳定版本号 `x.y.z` 后，会按 `v<version>` 生成 release tag，并先检查现有 tag；若存在更高版本 tag 会直接失败，若存在同版本 tag/release 会先删除，再直接创建 GitHub Release，并分别上传 Linux server、Linux CLI client、macOS client、Windows client 四个发布包；整个流程不依赖 Actions artifact 中转。
 - 当前发版工作流还会额外校验两件事：必须从默认分支触发，以及输入版本号必须同时匹配 `Cargo.toml` 的 workspace version 和 `apps/minipunch-desktop/package.json` 的 version。
 - 当前发版工作流已经补了 Node/Rust 构建缓存，并且如果构建都成功但最终发布失败，也会清理 draft release 和新建 tag，避免残留半成品 release。
 - 当前 GUI 状态面板已经拆成两部分：一部分是“本地配置 + 网络快照”的派生视图，另一部分是读取 `<config-stem>.runtime.json` 得到的真实本地运行观测。

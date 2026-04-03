@@ -196,6 +196,41 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  build-linux-cli-client:
+    name: Build Linux CLI Client
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build agent
+        run: cargo build --release --locked --bin minipunch-agent
+
+      - name: Package CLI client
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          out="dist/minipunch-agent-linux-${arch}-${{ needs.prepare-release.outputs.version }}.tar.gz"
+          bash scripts/package-linux-agent.sh \
+            "${{ needs.prepare-release.outputs.version }}" \
+            "target/release/minipunch-agent" \
+            "${out}"
+          echo "asset=${out}" >> "${GITHUB_ENV}"
+
+      - name: Upload release asset
+        run: gh release upload "${{ needs.prepare-release.outputs.tag }}" "${asset}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   build-macos-client:
     name: Build macOS Client
     needs: prepare-release
@@ -303,6 +338,7 @@ jobs:
     needs:
       - prepare-release
       - build-linux-server
+      - build-linux-cli-client
       - build-macos-client
       - build-windows-client
     runs-on: ubuntu-latest
@@ -326,6 +362,7 @@ jobs:
     needs:
       - prepare-release
       - build-linux-server
+      - build-linux-cli-client
       - build-macos-client
       - build-windows-client
       - publish-release
@@ -333,12 +370,13 @@ jobs:
     if: >-
       ${{
         always() &&
-        needs.prepare-release.result == 'success' &&
-        (
-          needs.build-linux-server.result != 'success' ||
-          needs.build-macos-client.result != 'success' ||
-          needs.build-windows-client.result != 'success' ||
-          needs.publish-release.result == 'failure'
+          needs.prepare-release.result == 'success' &&
+          (
+            needs.build-linux-server.result != 'success' ||
+            needs.build-linux-cli-client.result != 'success' ||
+            needs.build-macos-client.result != 'success' ||
+            needs.build-windows-client.result != 'success' ||
+            needs.publish-release.result == 'failure'
         )
       }}
     steps:
