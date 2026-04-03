@@ -48,6 +48,10 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_DIRECT_WAIT_SECONDS)]
         direct_wait_seconds: u64,
     },
+    DeletePublish {
+        #[arg(long)]
+        name: String,
+    },
     AddForward {
         #[arg(long)]
         name: String,
@@ -234,6 +238,11 @@ async fn main() -> Result<()> {
                     direct_wait_seconds,
                 })
                 .await?;
+            println!("{}", serde_json::to_string_pretty(&service)?);
+        }
+        Command::DeletePublish { name } => {
+            let mut runtime = AgentRuntime::load(&config_path).await?;
+            let service = runtime.delete_published_service(&name).await?;
             println!("{}", serde_json::to_string_pretty(&service)?);
         }
         Command::Network => {
