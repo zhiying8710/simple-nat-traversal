@@ -27,16 +27,71 @@ ICON_NAME="AppIcon.icns"
 ICON_FILE_STEM="AppIcon"
 TMP_DIR="$(mktemp -d)"
 STAGE_DIR="${TMP_DIR}/stage"
+TEMP_DMG="${TMP_DIR}/minipunch-desktop.dmg"
+HDIUTIL_LOG="${TMP_DIR}/hdiutil-create.log"
 APP_DIR="${STAGE_DIR}/${APP_BUNDLE}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 BIN_DIR="${RESOURCES_DIR}/bin"
+DMG_VOLUME_NAME="${APP_NAME} ${VERSION}"
 
 cleanup() {
   rm -rf "${TMP_DIR}"
 }
 trap cleanup EXIT
+
+detach_stale_mounts() {
+  if ! command -v hdiutil >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local volume_path="/Volumes/${DMG_VOLUME_NAME}"
+  local detached=0
+  while IFS= read -r device; do
+    [[ -n "${device}" ]] || continue
+    if hdiutil detach "${device}" -force >/dev/null 2>&1; then
+      detached=1
+    fi
+  done < <(hdiutil info | awk -v volume_path="${volume_path}" '
+    $1 ~ /^\/dev\// && index($0, volume_path) { print $1 }
+  ' | sort -u)
+
+  if [[ "${detached}" -eq 1 ]]; then
+    sleep 1
+  fi
+}
+
+create_dmg_with_retry() {
+  local max_attempts=4
+  local attempt
+
+  for attempt in $(seq 1 "${max_attempts}"); do
+    rm -f "${TEMP_DMG}" "${HDIUTIL_LOG}"
+    if hdiutil create \
+      -volname "${DMG_VOLUME_NAME}" \
+      -srcfolder "${STAGE_DIR}" \
+      -ov \
+      -format UDZO \
+      "${TEMP_DMG}" > /dev/null 2> "${HDIUTIL_LOG}"; then
+      mv "${TEMP_DMG}" "${OUT_DMG}"
+      return 0
+    fi
+
+    if grep -q "Resource busy" "${HDIUTIL_LOG}"; then
+      echo "hdiutil create reported 'Resource busy' on attempt ${attempt}/${max_attempts}; retrying..." >&2
+      detach_stale_mounts
+      sleep $((attempt * 2))
+      continue
+    fi
+
+    cat "${HDIUTIL_LOG}" >&2
+    return 1
+  done
+
+  cat "${HDIUTIL_LOG}" >&2
+  return 1
+}
 
 mkdir -p "${MACOS_DIR}" "${BIN_DIR}"
 
@@ -101,12 +156,8 @@ ln -s /Applications "${STAGE_DIR}/Applications"
 
 mkdir -p "$(dirname "${OUT_DMG}")"
 rm -f "${OUT_DMG}"
+detach_stale_mounts
 
-hdiutil create \
-  -volname "${APP_NAME} ${VERSION}" \
-  -srcfolder "${STAGE_DIR}" \
-  -ov \
-  -format UDZO \
-  "${OUT_DMG}" >/dev/null
+create_dmg_with_retry
 
 echo "created ${OUT_DMG}"
