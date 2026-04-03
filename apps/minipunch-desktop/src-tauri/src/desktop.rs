@@ -879,7 +879,10 @@ fn runtime_snapshot_for_config(config_path: &Path) -> (Option<RuntimeStateSnapsh
             } else {
                 (
                     Some(snapshot),
-                    format!("正在读取本地运行态文件：{}", runtime_path.display()),
+                    format!(
+                        "当前运行观测来源于本地运行态文件：{}",
+                        runtime_path.display()
+                    ),
                 )
             }
         }
